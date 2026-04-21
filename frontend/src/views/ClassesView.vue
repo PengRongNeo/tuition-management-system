@@ -25,20 +25,20 @@
               <th>Level</th>
               <th>Schedule</th>
               <th>Teacher</th>
-              <th>Monthly Fee</th>
+              <th>Rate / Hour</th>
               <th>Students</th>
               <th>Status</th>
               <th>Actions</th>
             </tr>
           </thead>
           <tbody>
-            <tr v-for="classItem in classes" :key="classItem.id">
+            <tr v-for="classItem in sortedClasses" :key="classItem.id">
               <td>{{ classItem.name }}</td>
               <td>{{ classItem.subject }}</td>
               <td>{{ classItem.level }}</td>
               <td>{{ formatSchedule(classItem) }}</td>
               <td>{{ classItem.teacherName || 'Not assigned' }}</td>
-              <td>${{ classItem.monthly_fee }}</td>
+              <td>${{ getRatePerHour(classItem) }} / hour &middot; {{ getDefaultDuration(classItem) }}h</td>
               <td>{{ classItem.studentCount || 0 }}</td>
               <td>
                 <span :class="classItem.active ? 'badge badge-success' : 'badge badge-danger'">
@@ -194,8 +194,33 @@
               </select>
             </div>
             <div class="form-group">
-              <label>Monthly Fee ($) *</label>
-              <input type="number" v-model.number="formData.monthlyFee" required min="0" step="0.01" />
+              <label for="class-rate-per-hour">Rate Per Hour ($) *</label>
+              <input
+                id="class-rate-per-hour"
+                type="number"
+                v-model.number="formData.ratePerHour"
+                required
+                min="0"
+                step="0.01"
+                placeholder="Enter hourly rate"
+              />
+            </div>
+            <div class="form-group">
+              <label for="class-default-duration">Default Lesson Duration *</label>
+              <select
+                id="class-default-duration"
+                v-model.number="formData.defaultDurationHours"
+                required
+              >
+                <option :value="1">1h</option>
+                <option :value="1.5">1.5h</option>
+                <option :value="2">2h</option>
+                <option :value="2.5">2.5h</option>
+                <option :value="3">3h</option>
+              </select>
+              <p style="font-size: 12px; color: #666; margin-top: 4px;">
+                Default duration applied to each student when submitting a lesson; can be overridden per student.
+              </p>
             </div>
             <div class="form-group">
               <label>
@@ -245,7 +270,8 @@ export default {
       startTime: '',
       endTime: '',
       mainTeacherId: '',
-      monthlyFee: 0,
+      ratePerHour: null,
+      defaultDurationHours: 2,
       active: true
     })
     const editingId = ref(null)
@@ -400,6 +426,7 @@ export default {
           'English',
           'Math',
           'Amath',
+          'Science',
           'Science(Chem)',
           'Science(Phy)',
           'Science(Bio)',
@@ -415,6 +442,7 @@ export default {
           'English',
           'Math',
           'Amath',
+          'Science',
           'Science(Chem)',
           'Science(Phy)',
           'Science(Bio)',
@@ -463,6 +491,44 @@ export default {
       return 'Not set'
     }
 
+    const DAY_ORDER = {
+      Monday: 1,
+      Tuesday: 2,
+      Wednesday: 3,
+      Thursday: 4,
+      Friday: 5,
+      Saturday: 6,
+      Sunday: 7
+    }
+
+    const timeToMinutes = (time) => {
+      if (!time || typeof time !== 'string') return 9999
+      const trimmed = time.trim()
+      const match = trimmed.match(/^(\d{1,2}):(\d{2})\s*(AM|PM)?$/i)
+      if (!match) return 9999
+      let hours = parseInt(match[1], 10)
+      const minutes = parseInt(match[2], 10)
+      const period = match[3] ? match[3].toUpperCase() : null
+      if (Number.isNaN(hours) || Number.isNaN(minutes)) return 9999
+      if (period === 'PM' && hours !== 12) hours += 12
+      if (period === 'AM' && hours === 12) hours = 0
+      return hours * 60 + minutes
+    }
+
+    const sortedClasses = computed(() => {
+      return [...classes.value].sort((a, b) => {
+        const dayA = DAY_ORDER[a.day_of_week] ?? 999
+        const dayB = DAY_ORDER[b.day_of_week] ?? 999
+        if (dayA !== dayB) return dayA - dayB
+
+        const timeA = timeToMinutes(a.start_time)
+        const timeB = timeToMinutes(b.start_time)
+        if (timeA !== timeB) return timeA - timeB
+
+        return (a.name || '').localeCompare(b.name || '')
+      })
+    })
+
     const timeRangeError = computed(() => {
       const start = formData.value.startTime
       const end = formData.value.endTime
@@ -494,6 +560,14 @@ export default {
 
     const editClass = (classItem) => {
       editingId.value = classItem.id
+      const existingRate =
+        classItem.rate_per_hour ??
+        classItem.ratePerHour ??
+        classItem.rate_per_lesson ??
+        classItem.monthly_fee
+      const existingDuration =
+        classItem.default_duration_hours ??
+        classItem.defaultDurationHours
       formData.value = {
         stream: classItem.stream || '',
         name: classItem.name || '',
@@ -503,7 +577,8 @@ export default {
         startTime: classItem.start_time || '',
         endTime: classItem.end_time || '',
         mainTeacherId: classItem.main_teacher_id || '',
-        monthlyFee: classItem.monthly_fee || 0,
+        ratePerHour: existingRate === undefined || existingRate === null ? null : Number(existingRate),
+        defaultDurationHours: Number(existingDuration) > 0 ? Number(existingDuration) : 2,
         active: classItem.active !== false
       }
       onDayChange() // clear start/end if outside selected day's time range
@@ -532,6 +607,13 @@ export default {
         error.value = timeRangeError.value
         return
       }
+      const rate = formData.value.ratePerHour
+      if (rate === null || rate === undefined || rate === '' || Number.isNaN(Number(rate)) || Number(rate) < 0) {
+        error.value = 'Please enter a valid rate per hour.'
+        return
+      }
+      const durationRaw = Number(formData.value.defaultDurationHours)
+      const duration = Number.isFinite(durationRaw) && durationRaw > 0 ? durationRaw : 2
       try {
         const classData = {
           stream: formData.value.stream,
@@ -542,7 +624,8 @@ export default {
           start_time: formData.value.startTime,
           end_time: formData.value.endTime,
           main_teacher_id: formData.value.mainTeacherId,
-          monthly_fee: formData.value.monthlyFee,
+          rate_per_hour: Number(rate),
+          default_duration_hours: duration,
           active: formData.value.active
         }
         if (showEditModal.value && editingId.value) {
@@ -570,10 +653,30 @@ export default {
         startTime: '',
         endTime: '',
         mainTeacherId: '',
-        monthlyFee: 0,
+        ratePerHour: null,
+        defaultDurationHours: 2,
         active: true
       }
       error.value = ''
+    }
+
+    const getRatePerHour = (classItem) => {
+      const raw =
+        classItem?.rate_per_hour ??
+        classItem?.ratePerHour ??
+        classItem?.rate_per_lesson ??
+        classItem?.monthly_fee ??
+        0
+      const n = Number(raw)
+      return Number.isFinite(n) ? n : 0
+    }
+
+    const getDefaultDuration = (classItem) => {
+      const raw =
+        classItem?.default_duration_hours ??
+        classItem?.defaultDurationHours
+      const n = Number(raw)
+      return Number.isFinite(n) && n > 0 ? n : 2
     }
 
     onMounted(async () => {
@@ -589,6 +692,7 @@ export default {
     return {
       loading,
       classes,
+      sortedClasses,
       teachers,
       showCreateModal,
       showEditModal,
@@ -613,7 +717,9 @@ export default {
       editClass,
       deleteClass,
       saveClass,
-      closeModal
+      closeModal,
+      getRatePerHour,
+      getDefaultDuration
     }
   }
 }

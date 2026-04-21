@@ -17,15 +17,22 @@
 
 <script>
 import { useRouter } from 'vue-router'
+import { signOut } from 'firebase/auth'
 import { api } from '../api'
+import { auth } from '../firebase'
 
 export default {
   name: 'Navbar',
   setup() {
     const router = useRouter()
 
-    const logout = () => {
+    const logout = async () => {
       api.clearToken()
+      try {
+        await signOut(auth)
+      } catch (err) {
+        console.warn('[auth] Firebase signOut failed:', err)
+      }
       router.push('/login')
     }
 

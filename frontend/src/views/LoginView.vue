@@ -2,6 +2,7 @@
   <div class="login-container">
     <div class="login-card">
       <h1>Admin Login</h1>
+      <div v-if="notice" class="notice">{{ notice }}</div>
       <form @submit.prevent="login">
         <div class="form-group">
           <label>Email</label>
@@ -32,8 +33,10 @@
 
 <script>
 import { ref } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
+import { signInWithEmailAndPassword } from 'firebase/auth'
 import { api } from '../api'
+import { auth } from '../firebase'
 
 export default {
   name: 'LoginView',
@@ -43,13 +46,30 @@ export default {
     const error = ref('')
     const loading = ref(false)
     const router = useRouter()
+    const route = useRoute()
+    const notice = ref(
+      route.query.reason === 'session-expired'
+        ? 'Session expired. Please log in again.'
+        : ''
+    )
 
     const login = async () => {
       error.value = ''
       loading.value = true
       try {
-        const { token } = await api.post('/api/auth/login', { email: email.value, password: password.value })
+        const { token } = await api.post('/api/auth/login', {
+          email: email.value,
+          password: password.value
+        })
         api.setToken(token)
+        try {
+          await signInWithEmailAndPassword(auth, email.value, password.value)
+        } catch (firebaseErr) {
+          console.warn(
+            '[auth] Firebase client sign-in failed; Firestore rules requiring request.auth will block this session.',
+            firebaseErr
+          )
+        }
         router.push('/dashboard')
       } catch (err) {
         error.value = err.message || 'Invalid credentials. Please try again.'
@@ -63,6 +83,7 @@ export default {
       password,
       error,
       loading,
+      notice,
       login
     }
   }
@@ -100,5 +121,16 @@ export default {
   width: 100%;
   margin-top: 16px;
   padding: 12px;
+}
+
+.notice {
+  margin-bottom: 16px;
+  padding: 10px 14px;
+  border-radius: 8px;
+  background: #fef3c7;
+  color: #92400e;
+  font-size: 0.875rem;
+  line-height: 1.4;
+  border: 1px solid #fde68a;
 }
 </style>

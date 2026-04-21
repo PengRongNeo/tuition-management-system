@@ -63,8 +63,9 @@ Suggested questions (order and titles can vary; the script maps by **item title*
 
 ```javascript
 // ============== CONFIG – edit these ==============
-var BACKEND_BASE_URL = 'https://your-backend.com';  // e.g. https://api.yoursite.com or http://localhost:4000
-var FORM_SECRET      = 'your-long-random-secret-string';  // same as FORM_SUBMIT_SECRET in backend/.env
+// MUST include https:// (e.g. https://your-app.up.railway.app)
+var BACKEND_BASE_URL = 'https://your-backend.com';
+var FORM_SECRET      = 'your-long-random-secret-string';  // same as FORM_SUBMIT_SECRET in backend
 // ================================================
 
 function onSubmit(e) {
@@ -75,17 +76,17 @@ function onSubmit(e) {
     byTitle[r.getItem().getTitle().trim()] = r.getResponse();
   });
 
-  // Map form titles to backend field names (adjust titles to match your form)
   var payload = {
-    name:          byTitle['Student Name'] || byTitle['Student name'] || '',
-    school:        byTitle['School'] || byTitle['school'] || '',
-    level:         byTitle['Level'] || byTitle['level'] || '',
-    parent_name:   byTitle['Parent Name'] || byTitle['Parent name'] || '',
-    parent_contact: byTitle['Parent Contact'] || byTitle['Parent contact'] || '',
-    parent_email:  byTitle['Parent Email'] || byTitle['Parent email'] || '',
-    status:        byTitle['Status'] || 'active'
+    name:            byTitle['Student Name'] || byTitle['Student name'] || '',
+    school:          byTitle['School'] || byTitle['school'] || '',
+    level:           byTitle['Level'] || byTitle['level'] || '',
+    parent_name:     byTitle['Parent Name'] || byTitle['Parent name'] || '',
+    parent_contact:  byTitle['Parent Contact'] || byTitle['Parent contact'] || '',
+    parent_email:    byTitle['Parent Email'] || byTitle['Parent email'] || '',
+    status:          byTitle['Status'] || 'active'
   };
 
+  var url = BACKEND_BASE_URL.replace(/\/$/, '') + '/api/public/student-from-form';
   var options = {
     method: 'post',
     contentType: 'application/json',
@@ -94,7 +95,6 @@ function onSubmit(e) {
     muteHttpExceptions: true
   };
 
-  var url = BACKEND_BASE_URL.replace(/\/$/, '') + '/api/public/student-from-form';
   var resp = UrlFetchApp.fetch(url, options);
   var code = resp.getResponseCode();
   var body = resp.getContentText();

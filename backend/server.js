@@ -28,11 +28,18 @@ function getServiceAccountPath() {
 
 // Initialize Firebase Admin
 if (admin.apps.length === 0) {
+  let initialized = false
   const credPath = getServiceAccountPath()
-  if (credPath) {
-    const key = JSON.parse(readFileSync(credPath, 'utf8'))
-    admin.initializeApp({ credential: admin.credential.cert(key) })
-  } else if (process.env.FIREBASE_PROJECT_ID && process.env.FIREBASE_CLIENT_EMAIL && process.env.FIREBASE_PRIVATE_KEY) {
+  if (credPath && existsSync(credPath)) {
+    try {
+      const key = JSON.parse(readFileSync(credPath, 'utf8'))
+      admin.initializeApp({ credential: admin.credential.cert(key) })
+      initialized = true
+    } catch (e) {
+      console.warn('Could not load credentials file, trying env vars:', e.message)
+    }
+  }
+  if (!initialized && process.env.FIREBASE_PROJECT_ID && process.env.FIREBASE_CLIENT_EMAIL && process.env.FIREBASE_PRIVATE_KEY) {
     admin.initializeApp({
       credential: admin.credential.cert({
         projectId: process.env.FIREBASE_PROJECT_ID,
@@ -40,8 +47,10 @@ if (admin.apps.length === 0) {
         privateKey: process.env.FIREBASE_PRIVATE_KEY.replace(/\\n/g, '\n')
       })
     })
-  } else {
-    console.error('Missing Firebase Admin config. Set GOOGLE_APPLICATION_CREDENTIALS, or place service account JSON in backend/node_modules (e.g. serviceAccountKey.json or *firebase*adminsdk*.json), or set FIREBASE_PROJECT_ID, FIREBASE_CLIENT_EMAIL, FIREBASE_PRIVATE_KEY')
+    initialized = true
+  }
+  if (!initialized) {
+    console.error('Missing Firebase Admin config. Set GOOGLE_APPLICATION_CREDENTIALS (with file present), or set FIREBASE_PROJECT_ID, FIREBASE_CLIENT_EMAIL, FIREBASE_PRIVATE_KEY')
     process.exit(1)
   }
 }
@@ -104,7 +113,9 @@ app.post('/api/auth/login', async (req, res) => {
   }
 })
 
-// --- Public: create student from Google Form (no auth; requires X-Form-Secret header) ---
+// --- Public: create pending student from Google Form (no auth; requires X-Form-Secret header) ---
+// New submissions go into `pending_students` so admins can review and select the
+// official school before the record is promoted into the main `students` collection.
 app.post('/api/public/student-from-form', async (req, res) => {
   const secret = process.env.FORM_SUBMIT_SECRET
   if (!secret) {
@@ -116,17 +127,105 @@ app.post('/api/public/student-from-form', async (req, res) => {
   }
   try {
     const body = req.body || {}
-    const ref = await db.collection('students').add({
-      name: (body.name || '').trim(),
-      school: (body.school || '').trim(),
-      level: (body.level || '').trim(),
-      parent_name: (body.parent_name || '').trim(),
-      parent_contact: (body.parent_contact || '').trim(),
-      parent_email: (body.parent_email || '').trim(),
-      status: body.status === 'inactive' ? 'inactive' : 'active',
-      created_at: admin.firestore.FieldValue.serverTimestamp()
+    const rawSchool = (body.submitted_school ?? body.school ?? '').toString().trim()
+    const requestedClasses = (
+      body.requested_classes ?? body.classes ?? body.subjects ?? ''
+    ).toString().trim()
+    const ref = await db.collection('pending_students').add({
+      name: (body.name || '').toString().trim(),
+      submitted_school: rawSchool,
+      official_school: '',
+      level: (body.level || '').toString().trim(),
+      parent_name: (body.parent_name || '').toString().trim(),
+      parent_contact: (body.parent_contact || '').toString().trim(),
+      parent_email: (body.parent_email || '').toString().trim(),
+      requested_classes: requestedClasses,
+      status: 'pending',
+      submitted_at: admin.firestore.FieldValue.serverTimestamp()
     })
     res.status(201).json({ id: ref.id, ok: true })
+  } catch (e) {
+    res.status(500).json({ error: e.message })
+  }
+})
+
+// --- Pending Students (admin review queue for Google Form submissions) ---
+app.get('/api/pending-students', requireAuth, async (req, res) => {
+  try {
+    const snap = await db.collection('pending_students').get()
+    const list = snap.docs
+      .map(d => {
+        const data = d.data()
+        return {
+          id: d.id,
+          ...data,
+          submitted_at: data.submitted_at?.toMillis?.() ?? data.submitted_at ?? null,
+          approved_at: data.approved_at?.toMillis?.() ?? data.approved_at ?? null
+        }
+      })
+      .filter(p => (p.status ?? 'pending') === 'pending')
+      .sort((a, b) => (b.submitted_at || 0) - (a.submitted_at || 0))
+    res.json(list)
+  } catch (e) {
+    res.status(500).json({ error: e.message })
+  }
+})
+
+app.post('/api/pending-students/:id/approve', requireAuth, async (req, res) => {
+  try {
+    const id = req.params.id
+    const ref = db.collection('pending_students').doc(id)
+    const snap = await ref.get()
+    if (!snap.exists) return res.status(404).json({ error: 'Pending student not found' })
+    const pending = snap.data()
+    const body = req.body || {}
+
+    const officialSchool = (body.official_school ?? pending.official_school ?? '').toString().trim()
+    if (!officialSchool) {
+      return res.status(400).json({ error: 'Please select the official school before adding this student.' })
+    }
+
+    const name = (body.name ?? pending.name ?? '').toString().trim()
+    const level = (body.level ?? pending.level ?? '').toString().trim()
+    const parentName = (body.parent_name ?? pending.parent_name ?? '').toString().trim()
+    const parentContact = (body.parent_contact ?? pending.parent_contact ?? '').toString().trim()
+    const parentEmail = (body.parent_email ?? pending.parent_email ?? '').toString().trim()
+
+    if (!name) return res.status(400).json({ error: 'Student name is required.' })
+    if (!level) return res.status(400).json({ error: 'Level is required.' })
+    if (!parentName) return res.status(400).json({ error: 'Parent name is required.' })
+    if (!parentContact) return res.status(400).json({ error: 'Parent contact is required.' })
+
+    const studentRef = await db.collection('students').add({
+      name,
+      school: officialSchool,
+      level,
+      parent_name: parentName,
+      parent_contact: parentContact,
+      parent_email: parentEmail,
+      status: 'active',
+      source: 'pending_form',
+      pending_id: id,
+      created_at: admin.firestore.FieldValue.serverTimestamp()
+    })
+
+    await ref.update({
+      status: 'approved',
+      official_school: officialSchool,
+      approved_at: admin.firestore.FieldValue.serverTimestamp(),
+      approved_student_id: studentRef.id
+    })
+
+    res.json({ ok: true, studentId: studentRef.id })
+  } catch (e) {
+    res.status(500).json({ error: e.message })
+  }
+})
+
+app.delete('/api/pending-students/:id', requireAuth, async (req, res) => {
+  try {
+    await db.collection('pending_students').doc(req.params.id).delete()
+    res.json({ ok: true })
   } catch (e) {
     res.status(500).json({ error: e.message })
   }
@@ -162,7 +261,20 @@ app.get('/api/public/class/:id', async (req, res) => {
       const s = await db.collection('students').doc(ed.student_id).get()
       if (s.exists) students.push({ id: ed.student_id, name: s.data().name })
     }
-    res.json({ id: classDoc.id, ...classData, teacherName, students })
+    const defaultDurationHours = Number(classData.default_duration_hours) > 0
+      ? Number(classData.default_duration_hours)
+      : 2
+    const ratePerHour = Number(
+      classData.rate_per_hour ?? classData.rate_per_lesson ?? classData.monthly_fee
+    ) || 0
+    res.json({
+      id: classDoc.id,
+      ...classData,
+      teacherName,
+      students,
+      defaultDurationHours,
+      ratePerHour
+    })
   } catch (e) {
     res.status(500).json({ error: e.message })
   }
@@ -175,25 +287,93 @@ app.post('/api/public/lesson-submit', async (req, res) => {
     if (!classId || !lessonDate || !teacherId || !attendance || typeof attendance !== 'object') {
       return res.status(400).json({ error: 'classId, lessonDate, teacherId, and attendance required' })
     }
+    // Look up class so we can snapshot name + default duration on the lesson
+    // and use its default duration as a fallback when a student row doesn't
+    // specify one.
+    let className = ''
+    let classDefaultDuration = 2
+    try {
+      const classDoc = await db.collection('classes').doc(classId).get()
+      if (classDoc.exists) {
+        const cd = classDoc.data()
+        className = cd.name || ''
+        const dur = Number(cd.default_duration_hours)
+        if (Number.isFinite(dur) && dur > 0) classDefaultDuration = dur
+      }
+    } catch (_) { /* non-fatal */ }
+
     const lessonRef = await db.collection('lessons').add({
+      // Snake_case is the canonical shape; camelCase mirrors are written for
+      // robustness so any reader using either convention can find the record.
       class_id: classId,
+      classId,
+      class_name: className,
+      className,
       teacher_id: teacherId,
+      teacherId,
       lesson_date: lessonDate,
+      lessonDate,
       description: description || '',
       homework: homework || '',
       materials_link: materialsLink || '',
-      created_at: admin.firestore.FieldValue.serverTimestamp()
+      materialsLink: materialsLink || '',
+      duration_hours: classDefaultDuration,
+      durationHours: classDefaultDuration,
+      created_at: admin.firestore.FieldValue.serverTimestamp(),
+      createdAt: admin.firestore.FieldValue.serverTimestamp()
     })
     const batch = db.batch()
     for (const [studentId, att] of Object.entries(attendance)) {
       if (!att?.status) continue
+      const rawDur = Number(att.durationHours ?? att.duration_hours)
+      const duration = Number.isFinite(rawDur) && rawDur > 0 ? rawDur : classDefaultDuration
+      const isMakeup = Boolean(att.isMakeup ?? att.is_makeup)
       const ref = db.collection('attendance').doc()
-      batch.set(ref, { lesson_id: lessonRef.id, student_id: studentId, status: att.status, remark: att.remark || '' })
+      batch.set(ref, {
+        lesson_id: lessonRef.id,
+        lessonId: lessonRef.id,
+        class_id: classId,
+        classId,
+        student_id: studentId,
+        studentId,
+        status: att.status,
+        remark: att.remark || '',
+        duration_hours: duration,
+        durationHours: duration,
+        is_makeup: isMakeup,
+        isMakeup,
+        created_at: admin.firestore.FieldValue.serverTimestamp(),
+        createdAt: admin.firestore.FieldValue.serverTimestamp()
+      })
     }
     await batch.commit()
     res.json({ id: lessonRef.id })
   } catch (e) {
     res.status(500).json({ error: e.message || 'Submit failed' })
+  }
+})
+
+// --- Public: minimal students list for makeup student search (no auth) ---
+app.get('/api/public/students-minimal', async (req, res) => {
+  try {
+    const snap = await db.collection('students').get()
+    const list = snap.docs
+      .map(d => {
+        const data = d.data()
+        if (data.status && data.status !== 'active') return null
+        return {
+          id: d.id,
+          name: data.name || '',
+          school: data.school || '',
+          level: data.level || '',
+          parent_contact: data.parent_contact || ''
+        }
+      })
+      .filter(Boolean)
+    list.sort((a, b) => (a.name || '').localeCompare(b.name || ''))
+    res.json(list)
+  } catch (e) {
+    res.status(500).json({ error: e.message })
   }
 })
 
@@ -244,9 +424,33 @@ app.get('/api/classes/:id', requireAuth, async (req, res) => {
   }
 })
 
+function resolveHourlyRate(body) {
+  // Accept new (rate_per_hour) and legacy (rate_per_lesson / monthly_fee) inputs.
+  const rate =
+    body?.rate_per_hour ??
+    body?.ratePerHour ??
+    body?.rate_per_lesson ??
+    body?.ratePerLesson ??
+    body?.monthly_fee ??
+    body?.monthlyFee ??
+    0
+  const n = Number(rate)
+  return Number.isFinite(n) && n >= 0 ? n : 0
+}
+
+function resolveDefaultDurationHours(body) {
+  const raw =
+    body?.default_duration_hours ??
+    body?.defaultDurationHours
+  const n = Number(raw)
+  return Number.isFinite(n) && n > 0 ? n : 2
+}
+
 app.post('/api/classes', requireAuth, async (req, res) => {
   try {
-    const { name, subject, level, stream, day_of_week, start_time, end_time, main_teacher_id, monthly_fee, active } = req.body || {}
+    const { name, subject, level, stream, day_of_week, start_time, end_time, main_teacher_id, active } = req.body || {}
+    const rateHour = resolveHourlyRate(req.body)
+    const defaultDuration = resolveDefaultDurationHours(req.body)
     const ref = await db.collection('classes').add({
       name: name || '',
       subject: subject || '',
@@ -256,7 +460,8 @@ app.post('/api/classes', requireAuth, async (req, res) => {
       start_time: start_time || '',
       end_time: end_time || '',
       main_teacher_id: main_teacher_id || '',
-      monthly_fee: Number(monthly_fee) || 0,
+      rate_per_hour: rateHour,
+      default_duration_hours: defaultDuration,
       active: active !== false,
       created_at: admin.firestore.FieldValue.serverTimestamp()
     })
@@ -268,7 +473,9 @@ app.post('/api/classes', requireAuth, async (req, res) => {
 
 app.put('/api/classes/:id', requireAuth, async (req, res) => {
   try {
-    const { name, subject, level, stream, day_of_week, start_time, end_time, main_teacher_id, monthly_fee, active } = req.body || {}
+    const { name, subject, level, stream, day_of_week, start_time, end_time, main_teacher_id, active } = req.body || {}
+    const rateHour = resolveHourlyRate(req.body)
+    const defaultDuration = resolveDefaultDurationHours(req.body)
     await db.collection('classes').doc(req.params.id).update({
       name: name ?? '',
       subject: subject ?? '',
@@ -278,7 +485,8 @@ app.put('/api/classes/:id', requireAuth, async (req, res) => {
       start_time: start_time ?? '',
       end_time: end_time ?? '',
       main_teacher_id: main_teacher_id ?? '',
-      monthly_fee: Number(monthly_fee) ?? 0,
+      rate_per_hour: rateHour,
+      default_duration_hours: defaultDuration,
       active: active !== false
     })
     res.json({ ok: true })
@@ -390,17 +598,27 @@ app.get('/api/students', requireAuth, async (req, res) => {
     for (const d of studentsSnap.docs) {
       const data = d.data()
       const enrSnap = await db.collection('enrolments').where('student_id', '==', d.id).where('status', '==', 'active').get()
-      let monthlyFee = 0
+      let totalRatePerLesson = 0
       const enrolledClasses = []
       for (const e of enrSnap.docs) {
         const ed = e.data()
         const cls = classes.find(c => c.id === ed.class_id)
         if (cls) {
-          monthlyFee += Number(cls.monthly_fee) || 0
-          enrolledClasses.push({ id: e.id, className: cls.name, join_date: ed.join_date, monthlyFee: cls.monthly_fee })
+          const rate = Number(cls.rate_per_hour ?? cls.rate_per_lesson ?? cls.monthly_fee) || 0
+          const duration = Number(cls.default_duration_hours) || 2
+          totalRatePerLesson += rate
+          enrolledClasses.push({
+            id: e.id,
+            className: cls.name,
+            join_date: ed.join_date,
+            ratePerHour: rate,
+            defaultDurationHours: duration,
+            ratePerLesson: rate,
+            monthlyFee: rate
+          })
         }
       }
-      list.push({ id: d.id, ...data, enrolledClasses, monthlyFee })
+      list.push({ id: d.id, ...data, enrolledClasses, totalRatePerLesson, ratePerHourTotal: totalRatePerLesson, monthlyFee: totalRatePerLesson })
     }
     list.sort((a, b) => (a.name || '').localeCompare(b.name || ''))
     res.json(list)
@@ -417,17 +635,27 @@ app.get('/api/students/:id', requireAuth, async (req, res) => {
     const enrSnap = await db.collection('enrolments').where('student_id', '==', req.params.id).get()
     const classesSnap = await db.collection('classes').get()
     const classes = Object.fromEntries(classesSnap.docs.map(d => [d.id, d.data()]))
-    let monthlyFee = 0
+    let totalRatePerLesson = 0
     const enrolledClasses = []
     for (const e of enrSnap.docs) {
       const ed = e.data()
       const cls = classes[ed.class_id]
       if (cls && ed.status === 'active') {
-        monthlyFee += Number(cls.monthly_fee) || 0
-        enrolledClasses.push({ id: e.id, className: cls.name, join_date: ed.join_date, monthlyFee: cls.monthly_fee })
+        const rate = Number(cls.rate_per_hour ?? cls.rate_per_lesson ?? cls.monthly_fee) || 0
+        const duration = Number(cls.default_duration_hours) || 2
+        totalRatePerLesson += rate
+        enrolledClasses.push({
+          id: e.id,
+          className: cls.name,
+          join_date: ed.join_date,
+          ratePerHour: rate,
+          defaultDurationHours: duration,
+          ratePerLesson: rate,
+          monthlyFee: rate
+        })
       }
     }
-    res.json({ id: doc.id, ...data, enrolledClasses, monthlyFee })
+    res.json({ id: doc.id, ...data, enrolledClasses, totalRatePerLesson, ratePerHourTotal: totalRatePerLesson, monthlyFee: totalRatePerLesson })
   } catch (e) {
     res.status(500).json({ error: e.message })
   }
@@ -550,89 +778,480 @@ app.get('/api/lessons/:id', requireAuth, async (req, res) => {
     if (!doc.exists) return res.status(404).json({ error: 'Not found' })
     const data = doc.data()
     const attSnap = await db.collection('attendance').where('lesson_id', '==', req.params.id).get()
-    const attendance = attSnap.docs.map(d => ({ id: d.id, ...d.data() }))
+    const attendance = attSnap.docs.map(d => {
+      const ad = d.data()
+      return {
+        id: d.id,
+        ...ad,
+        duration_hours: ad.duration_hours ?? ad.durationHours ?? null,
+        is_makeup: Boolean(ad.is_makeup ?? ad.isMakeup)
+      }
+    })
     res.json({ id: doc.id, ...data, attendance })
   } catch (e) {
     res.status(500).json({ error: e.message })
   }
 })
 
+// --- Admin: update a single attendance record (status / duration / makeup / remark) ---
+app.put('/api/attendance/:id', requireAuth, async (req, res) => {
+  try {
+    const attRef = db.collection('attendance').doc(req.params.id)
+    const snap = await attRef.get()
+    if (!snap.exists) return res.status(404).json({ error: 'Attendance record not found' })
+
+    const body = req.body || {}
+    const update = {
+      updated_at: admin.firestore.FieldValue.serverTimestamp(),
+      updatedAt: admin.firestore.FieldValue.serverTimestamp()
+    }
+
+    if (body.status !== undefined) update.status = body.status
+
+    if (body.duration_hours !== undefined || body.durationHours !== undefined) {
+      const raw = Number(body.duration_hours ?? body.durationHours)
+      if (Number.isFinite(raw) && raw > 0) {
+        update.duration_hours = raw
+        update.durationHours = raw
+      }
+    }
+
+    if (body.is_makeup !== undefined || body.isMakeup !== undefined) {
+      const flag = Boolean(body.is_makeup ?? body.isMakeup)
+      update.is_makeup = flag
+      update.isMakeup = flag
+    }
+
+    if (body.remark !== undefined) update.remark = body.remark ?? ''
+
+    await attRef.update(update)
+    const fresh = await attRef.get()
+    res.json({ id: fresh.id, ...fresh.data() })
+  } catch (e) {
+    console.error('[PUT /api/attendance/:id] failed:', e)
+    res.status(500).json({ error: e.message || 'Update failed' })
+  }
+})
+
+// --- Admin: delete a single attendance record ---
+app.delete('/api/attendance/:id', requireAuth, async (req, res) => {
+  try {
+    const attRef = db.collection('attendance').doc(req.params.id)
+    const snap = await attRef.get()
+    if (!snap.exists) return res.status(404).json({ error: 'Attendance record not found' })
+    await attRef.delete()
+    res.json({ ok: true, id: req.params.id })
+  } catch (e) {
+    console.error('[DELETE /api/attendance/:id] failed:', e)
+    res.status(500).json({ error: e.message || 'Delete failed' })
+  }
+})
+
+// --- Admin: delete a lesson record and all attendance docs tied to it ---
+app.delete('/api/lessons/:id', requireAuth, async (req, res) => {
+  try {
+    const lessonId = req.params.id
+    const lessonRef = db.collection('lessons').doc(lessonId)
+    const lessonSnap = await lessonRef.get()
+    if (!lessonSnap.exists) return res.status(404).json({ error: 'Lesson not found' })
+
+    // Delete every attendance document referencing this lesson (both naming
+    // conventions in case legacy rows used camelCase).
+    const [snakeSnap, camelSnap] = await Promise.all([
+      db.collection('attendance').where('lesson_id', '==', lessonId).get(),
+      db.collection('attendance').where('lessonId', '==', lessonId).get()
+    ])
+    const seen = new Set()
+    const batch = db.batch()
+    for (const d of [...snakeSnap.docs, ...camelSnap.docs]) {
+      if (seen.has(d.id)) continue
+      seen.add(d.id)
+      batch.delete(d.ref)
+    }
+    batch.delete(lessonRef)
+    await batch.commit()
+
+    res.json({ ok: true, id: lessonId, deletedAttendance: seen.size })
+  } catch (e) {
+    console.error('[DELETE /api/lessons/:id] failed:', e)
+    res.status(500).json({ error: e.message || 'Delete failed' })
+  }
+})
+
+// --- Admin: update lesson record + attendance in a single request ---
+app.put('/api/lessons/:id', requireAuth, async (req, res) => {
+  try {
+    const lessonId = req.params.id
+    const lessonRef = db.collection('lessons').doc(lessonId)
+    const lessonSnap = await lessonRef.get()
+    if (!lessonSnap.exists) return res.status(404).json({ error: 'Lesson not found' })
+
+    const body = req.body || {}
+    const lessonData = lessonSnap.data() || {}
+    const classId = body.class_id ?? body.classId ?? lessonData.class_id ?? lessonData.classId
+
+    // Resolve class default duration for fallback on new attendance rows.
+    let classDefaultDuration = 2
+    if (classId) {
+      try {
+        const classDoc = await db.collection('classes').doc(classId).get()
+        if (classDoc.exists) {
+          const dur = Number(classDoc.data().default_duration_hours)
+          if (Number.isFinite(dur) && dur > 0) classDefaultDuration = dur
+        }
+      } catch (_) { /* non-fatal */ }
+    }
+
+    const update = {}
+    const assignBoth = (snake, camel, value) => {
+      update[snake] = value
+      update[camel] = value
+    }
+    if (body.lesson_date !== undefined || body.lessonDate !== undefined) {
+      assignBoth('lesson_date', 'lessonDate', body.lesson_date ?? body.lessonDate ?? '')
+    }
+    if (body.start_time !== undefined || body.startTime !== undefined) {
+      assignBoth('start_time', 'startTime', body.start_time ?? body.startTime ?? '')
+    }
+    if (body.end_time !== undefined || body.endTime !== undefined) {
+      assignBoth('end_time', 'endTime', body.end_time ?? body.endTime ?? '')
+    }
+    if (body.teacher_id !== undefined || body.teacherId !== undefined) {
+      assignBoth('teacher_id', 'teacherId', body.teacher_id ?? body.teacherId ?? '')
+    }
+    if (body.description !== undefined) update.description = body.description ?? ''
+    if (body.homework !== undefined) update.homework = body.homework ?? ''
+    if (body.materials_link !== undefined || body.materialsLink !== undefined) {
+      assignBoth('materials_link', 'materialsLink', body.materials_link ?? body.materialsLink ?? '')
+    }
+    if (body.duration_hours !== undefined || body.durationHours !== undefined) {
+      const raw = Number(body.duration_hours ?? body.durationHours)
+      const duration = Number.isFinite(raw) && raw > 0 ? raw : classDefaultDuration
+      assignBoth('duration_hours', 'durationHours', duration)
+    }
+    update.updated_at = admin.firestore.FieldValue.serverTimestamp()
+    update.updatedAt = admin.firestore.FieldValue.serverTimestamp()
+
+    const batch = db.batch()
+    batch.update(lessonRef, update)
+
+    const rows = Array.isArray(body.attendance) ? body.attendance : []
+    for (const row of rows) {
+      if (!row || typeof row !== 'object') continue
+      const studentId = row.student_id ?? row.studentId
+      const attId = row.id || null
+
+      // Row-level delete flag: remove this attendance doc if it exists.
+      if (row._remove || row.shouldDelete) {
+        if (attId) batch.delete(db.collection('attendance').doc(attId))
+        continue
+      }
+
+      if (!studentId || !row.status) continue
+      const rawDur = Number(row.duration_hours ?? row.durationHours)
+      const duration = Number.isFinite(rawDur) && rawDur > 0 ? rawDur : classDefaultDuration
+      const isMakeup = Boolean(row.is_makeup ?? row.isMakeup)
+      const remark = row.remark ?? ''
+
+      if (attId) {
+        batch.update(db.collection('attendance').doc(attId), {
+          lesson_id: lessonId,
+          lessonId: lessonId,
+          class_id: classId || null,
+          classId: classId || null,
+          student_id: studentId,
+          studentId: studentId,
+          status: row.status,
+          remark,
+          duration_hours: duration,
+          durationHours: duration,
+          is_makeup: isMakeup,
+          isMakeup: isMakeup,
+          updated_at: admin.firestore.FieldValue.serverTimestamp(),
+          updatedAt: admin.firestore.FieldValue.serverTimestamp()
+        })
+      } else {
+        const newRef = db.collection('attendance').doc()
+        batch.set(newRef, {
+          lesson_id: lessonId,
+          lessonId: lessonId,
+          class_id: classId || null,
+          classId: classId || null,
+          student_id: studentId,
+          studentId: studentId,
+          status: row.status,
+          remark,
+          duration_hours: duration,
+          durationHours: duration,
+          is_makeup: isMakeup,
+          isMakeup: isMakeup,
+          created_at: admin.firestore.FieldValue.serverTimestamp(),
+          createdAt: admin.firestore.FieldValue.serverTimestamp()
+        })
+      }
+    }
+
+    await batch.commit()
+    res.json({ ok: true })
+  } catch (e) {
+    console.error('[PUT /api/lessons/:id] failed:', e)
+    res.status(500).json({ error: e.message || 'Update failed' })
+  }
+})
+
 // --- Class lessons (for ClassView) ---
 app.get('/api/classes/:id/lessons', requireAuth, async (req, res) => {
   try {
-    const snap = await db.collection('lessons').where('class_id', '==', req.params.id).orderBy('created_at', 'desc').get()
-    const lessons = []
-    const classDoc = await db.collection('classes').doc(req.params.id).get()
+    const classId = req.params.id
+
+    // Query by both field name conventions and merge. Done WITHOUT an orderBy so
+    // that no composite index is required and docs that happen to be missing
+    // `created_at` are still returned. Sorting happens in memory below.
+    const [snakeSnap, camelSnap] = await Promise.all([
+      db.collection('lessons').where('class_id', '==', classId).get(),
+      db.collection('lessons').where('classId', '==', classId).get()
+    ])
+    const lessonDocs = []
+    const seen = new Set()
+    for (const d of [...snakeSnap.docs, ...camelSnap.docs]) {
+      if (seen.has(d.id)) continue
+      seen.add(d.id)
+      lessonDocs.push(d)
+    }
+
+    const classDoc = await db.collection('classes').doc(classId).get()
     const className = classDoc.exists ? classDoc.data().name : 'Unknown'
     const teachersSnap = await db.collection('teachers').get()
     const teachers = Object.fromEntries(teachersSnap.docs.map(d => [d.id, d.data().name]))
-    const studentsSnap = await db.collection('enrolments').where('class_id', '==', req.params.id).get()
+    const studentsSnap = await db.collection('enrolments').where('class_id', '==', classId).get()
     const studentIds = studentsSnap.docs.map(d => d.data().student_id)
     const studentsMap = {}
     for (const id of studentIds) {
       const s = await db.collection('students').doc(id).get()
       if (s.exists) studentsMap[id] = s.data().name
     }
-    for (const d of snap.docs) {
+
+    const lessons = []
+    for (const d of lessonDocs) {
       const data = d.data()
       const attSnap = await db.collection('attendance').where('lesson_id', '==', d.id).get()
       const attendance = attSnap.docs.map(att => {
         const ad = att.data()
-        return { ...ad, student_id: ad.student_id, studentName: studentsMap[ad.student_id] || 'Unknown' }
+        return {
+          id: att.id,
+          ...ad,
+          student_id: ad.student_id ?? ad.studentId,
+          studentName:
+            studentsMap[ad.student_id ?? ad.studentId] ||
+            ad.studentName ||
+            ad.student_name ||
+            'Unknown',
+          duration_hours: ad.duration_hours ?? ad.durationHours ?? null,
+          is_makeup: Boolean(ad.is_makeup ?? ad.isMakeup)
+        }
       })
       lessons.push({
         id: d.id,
         ...data,
+        // Normalize both naming conventions so the client can rely on snake_case.
+        class_id: data.class_id || data.classId || classId,
+        lesson_date: data.lesson_date || data.lessonDate || '',
+        start_time: data.start_time ?? data.startTime ?? '',
+        end_time: data.end_time ?? data.endTime ?? '',
+        teacher_id: data.teacher_id || data.teacherId || '',
+        materials_link: data.materials_link || data.materialsLink || '',
+        duration_hours: data.duration_hours ?? data.durationHours ?? null,
+        created_at: data.created_at || data.createdAt || null,
         className,
-        teacherName: data.teacher_id ? teachers[data.teacher_id] : 'Unknown',
+        teacherName: (data.teacher_id || data.teacherId) ? (teachers[data.teacher_id || data.teacherId] || 'Unknown') : 'Unknown',
         attendance
       })
     }
+
+    // Newest first, by lesson date (fall back to created_at timestamp).
+    const toMs = (value) => {
+      if (!value) return 0
+      if (typeof value === 'string') {
+        const t = Date.parse(value)
+        return Number.isNaN(t) ? 0 : t
+      }
+      if (value?.toDate) return value.toDate().getTime()
+      if (typeof value === 'number') return value
+      return 0
+    }
+    lessons.sort((a, b) => {
+      const da = toMs(a.lesson_date) || toMs(a.created_at)
+      const dbm = toMs(b.lesson_date) || toMs(b.created_at)
+      return dbm - da
+    })
+
     res.json(lessons)
   } catch (e) {
+    console.error('[GET /api/classes/:id/lessons] failed:', e)
     res.status(500).json({ error: e.message })
   }
 })
 
+// --- Attendance status helpers (kept in sync with frontend/src/constants/attendance.js) ---
+const ATTENDANCE_PRESENT = 'Present'
+const ATTENDANCE_LATE = 'Late'
+const ATTENDANCE_ABSENT_VALID = 'Absent (Valid)'
+const ATTENDANCE_ABSENT_CHARGED = 'Absent (Charged by Policy)'
+
+function normalizeAttendanceStatus(status) {
+  if (status == null) return ''
+  const raw = String(status).trim()
+  const lower = raw.toLowerCase()
+  if (lower === 'present') return ATTENDANCE_PRESENT
+  if (lower === 'late') return ATTENDANCE_LATE
+  // Legacy bare "Absent" => treat as valid absence (not chargeable).
+  if (lower === 'absent' || lower === 'absent (valid)' || lower === 'absent_valid') {
+    return ATTENDANCE_ABSENT_VALID
+  }
+  if (
+    lower === 'absent (charged by policy)' ||
+    lower === 'absent (charged)' ||
+    lower === 'absent_charged'
+  ) {
+    return ATTENDANCE_ABSENT_CHARGED
+  }
+  return raw
+}
+
+function isChargeableAttendanceStatus(status) {
+  const n = normalizeAttendanceStatus(status)
+  return n === ATTENDANCE_PRESENT || n === ATTENDANCE_LATE || n === ATTENDANCE_ABSENT_CHARGED
+}
+
+function parseLessonDate(value) {
+  if (!value) return null
+  if (typeof value === 'string') {
+    const m = value.match(/^(\d{4})-(\d{2})-(\d{2})/)
+    if (m) return new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]))
+    const d = new Date(value)
+    return isNaN(d.getTime()) ? null : d
+  }
+  if (value?.toDate) return value.toDate()
+  const d = new Date(value)
+  return isNaN(d.getTime()) ? null : d
+}
+
 // --- Dashboard ---
 app.get('/api/dashboard', requireAuth, async (req, res) => {
   try {
-    const classesSnap = await db.collection('classes').get()
+    const [classesSnap, studentsSnap, lessonsAllSnap, attendanceAllSnap] = await Promise.all([
+      db.collection('classes').get(),
+      db.collection('students').get(),
+      db.collection('lessons').get(),
+      db.collection('attendance').get()
+    ])
+
     const totalClasses = classesSnap.size
-    const classFeeMap = {}
-    classesSnap.docs.forEach(d => { classFeeMap[d.id] = Number(d.data().monthly_fee) || 0 })
-    const studentsSnap = await db.collection('students').get()
     const totalStudents = studentsSnap.size
-    const enrolmentsSnap = await db.collection('enrolments').get()
-    let monthlyRevenue = 0
-    enrolmentsSnap.docs.forEach(d => {
-      const { class_id, status } = d.data()
-      if (status !== 'inactive' && class_id && classFeeMap[class_id] != null) monthlyRevenue += classFeeMap[class_id]
+
+    const classRateMap = {}
+    const classDefaultDurationMap = {}
+    classesSnap.docs.forEach(d => {
+      const data = d.data()
+      classRateMap[d.id] = Number(data.rate_per_hour ?? data.rate_per_lesson ?? data.monthly_fee) || 0
+      const dur = Number(data.default_duration_hours)
+      classDefaultDurationMap[d.id] = Number.isFinite(dur) && dur > 0 ? dur : 2
     })
-    const enrolmentsWithFee = enrolmentsSnap.docs.map(d => {
-      const { class_id, join_date, status } = d.data()
-      const fee = class_id && classFeeMap[class_id] != null ? classFeeMap[class_id] : 0
-      const joinDate = join_date?.toDate ? join_date.toDate() : (join_date ? new Date(join_date) : null)
-      return { joinDate, fee, status }
-    }).filter(e => e.joinDate != null)
+
+    // Build lesson lookup: lesson_id -> { date, classId, ratePerHour, defaultDuration }
+    const lessonMap = {}
+    lessonsAllSnap.docs.forEach(d => {
+      const data = d.data()
+      const classId = data.class_id ?? data.classId
+      let ratePerHour = 0
+      let defaultDuration = 2
+      if (classId) {
+        if (classRateMap[classId] == null) {
+          console.warn('[dashboard] class not found for lesson', d.id, '(class_id:', classId, ')')
+        } else {
+          ratePerHour = classRateMap[classId]
+          defaultDuration = classDefaultDurationMap[classId] ?? 2
+        }
+      }
+      lessonMap[d.id] = {
+        date: parseLessonDate(data.lesson_date ?? data.lessonDate) || parseLessonDate(data.created_at ?? data.createdAt),
+        classId,
+        ratePerHour,
+        defaultDuration
+      }
+    })
+
     const now = new Date()
-    const monthLabels = []
-    const monthRevenues = []
-    for (let i = 11; i >= 0; i--) {
-      const d = new Date(now.getFullYear(), now.getMonth() - i, 1)
-      const endOfMonth = new Date(d.getFullYear(), d.getMonth() + 1, 0, 23, 59, 59)
-      const isCurrentMonth = d.getMonth() === now.getMonth() && d.getFullYear() === now.getFullYear()
-      monthLabels.push(d.toLocaleDateString('en-US', { month: 'short', year: 'numeric' }))
-      const rev = enrolmentsWithFee
-        .filter(e => e.joinDate <= endOfMonth && (!isCurrentMonth || e.status !== 'inactive'))
-        .reduce((sum, e) => sum + e.fee, 0)
-      monthRevenues.push(rev)
+    const endOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59, 999)
+
+    // Revenue thus far = sum(chargeable attendance × rate_per_hour × duration_hours) up to today.
+    let revenueThusFar = 0
+    const chargeableEntries = []
+    attendanceAllSnap.docs.forEach(d => {
+      const data = d.data()
+      if (!isChargeableAttendanceStatus(data.status)) return
+      const lesson = lessonMap[data.lesson_id ?? data.lessonId]
+      if (!lesson) return
+      if (lesson.date && lesson.date > endOfToday) return
+      const durationRaw = data.duration_hours ?? data.durationHours
+      const duration = Number.isFinite(Number(durationRaw)) && Number(durationRaw) > 0
+        ? Number(durationRaw)
+        : lesson.defaultDuration
+      const amount = (lesson.ratePerHour || 0) * duration
+      revenueThusFar += amount
+      if (lesson.date) chargeableEntries.push({ date: lesson.date, amount })
+    })
+
+    // Revenue grouped by week (Mon-Sun), keyed by the Monday of that week.
+    const mondayOfWeek = (date) => {
+      const d = new Date(date.getFullYear(), date.getMonth(), date.getDate())
+      const dow = d.getDay() // Sun=0 .. Sat=6
+      const offset = dow === 0 ? -6 : 1 - dow
+      d.setDate(d.getDate() + offset)
+      d.setHours(0, 0, 0, 0)
+      return d
     }
-    const startOfWeek = new Date(now)
-    const day = now.getDay()
-    const diff = now.getDate() - day + (day === 0 ? -6 : 1)
-    startOfWeek.setDate(diff)
+    const weekBuckets = new Map()
+    for (const entry of chargeableEntries) {
+      if (!entry.date) continue
+      const monday = mondayOfWeek(entry.date)
+      const key = monday.getTime()
+      weekBuckets.set(key, (weekBuckets.get(key) || 0) + entry.amount)
+    }
+    const weekEntries = Array.from(weekBuckets.entries())
+      .sort((a, b) => a[0] - b[0])
+      .map(([key, revenue]) => {
+        const monday = new Date(key)
+        return {
+          weekStartDate: monday.toISOString(),
+          weekLabel: monday.toLocaleDateString('en-SG', {
+            day: 'numeric',
+            month: 'short',
+            year: 'numeric'
+          }),
+          revenue
+        }
+      })
+    // Current week (Monday 00:00 .. Sunday 23:59:59.999).
+    const startOfWeek = new Date(now.getFullYear(), now.getMonth(), now.getDate())
+    const dayOfWeek = startOfWeek.getDay()
+    const diffToMonday = dayOfWeek === 0 ? -6 : 1 - dayOfWeek
+    startOfWeek.setDate(startOfWeek.getDate() + diffToMonday)
     startOfWeek.setHours(0, 0, 0, 0)
+    const endOfWeek = new Date(startOfWeek)
+    endOfWeek.setDate(endOfWeek.getDate() + 6)
+    endOfWeek.setHours(23, 59, 59, 999)
+
+    // Classes This Week = lessons whose actual lesson_date falls in this week.
+    let weeklyClassesCount = 0
+    for (const lesson of Object.values(lessonMap)) {
+      if (!lesson.date) continue
+      if (lesson.date >= startOfWeek && lesson.date <= endOfWeek) {
+        weeklyClassesCount += 1
+      }
+    }
+
+    // Recent Lesson Submissions (newest first, by submission time).
     const startOfWeekTs = admin.firestore.Timestamp.fromDate(startOfWeek)
     const lessonsSnap = await db.collection('lessons').where('created_at', '>=', startOfWeekTs).orderBy('created_at', 'desc').limit(10).get()
     const recentLessons = []
@@ -660,12 +1279,13 @@ app.get('/api/dashboard', requireAuth, async (req, res) => {
         attendance
       })
     }
-    const weeklyClassesCount = recentLessons.length
     res.json({
       totalClasses,
       totalStudents,
-      monthlyRevenue,
-      revenueByMonth: { labels: monthLabels, values: monthRevenues },
+      revenueThusFar,
+      // Alias kept for any older clients still reading the previous field name.
+      monthlyRevenue: revenueThusFar,
+      revenueByWeek: weekEntries,
       weeklyClassesCount,
       recentLessons
     })
