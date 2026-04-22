@@ -59,10 +59,32 @@ const db = admin.firestore()
 const auth = admin.auth()
 const app = express()
 const PORT = process.env.PORT || 4000
-const FRONTEND_ORIGIN = process.env.FRONTEND_ORIGIN || 'http://localhost:3000'
 
-app.use(cors({ origin: FRONTEND_ORIGIN, credentials: true }))
+// FRONTEND_ORIGIN accepts a comma-separated list of allowed origins so the
+// same backend can serve local dev + a Vercel preview + production from the
+// same deployment. Use "*" to allow any origin (not recommended in prod).
+const allowedOrigins = (process.env.FRONTEND_ORIGIN || 'http://localhost:3000')
+  .split(',')
+  .map((s) => s.trim())
+  .filter(Boolean)
+
+app.use(
+  cors({
+    origin(origin, cb) {
+      // Allow non-browser clients (curl, health checks) which send no Origin.
+      if (!origin) return cb(null, true)
+      if (allowedOrigins.includes('*')) return cb(null, true)
+      if (allowedOrigins.includes(origin)) return cb(null, true)
+      return cb(new Error(`Not allowed by CORS: ${origin}`), false)
+    },
+    credentials: true
+  })
+)
 app.use(express.json())
+
+// Simple health endpoint handy for Vercel / uptime checks.
+app.get('/', (_req, res) => res.json({ ok: true, service: 'tuition-management-backend' }))
+app.get('/api/health', (_req, res) => res.json({ ok: true }))
 
 // Auth middleware: verify Firebase ID token
 async function requireAuth(req, res, next) {
@@ -1294,4 +1316,16 @@ app.get('/api/dashboard', requireAuth, async (req, res) => {
   }
 })
 
-app.listen(PORT, () => console.log(`Backend running on http://localhost:${PORT}`))
+// Export the Express app so serverless platforms (e.g. Vercel) can invoke it
+// without a long-running HTTP server. The Vercel entry point lives at
+// `backend/api/index.js`.
+export default app
+
+// Only start a real HTTP server when this file is run directly (local dev or
+// a container / VPS). On Vercel the file is imported, so `app.listen` is
+// skipped.
+const invokedDirectly =
+  process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.argv[1])
+if (invokedDirectly && !process.env.VERCEL) {
+  app.listen(PORT, () => console.log(`Backend running on http://localhost:${PORT}`))
+}

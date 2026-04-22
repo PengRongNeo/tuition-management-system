@@ -1,4 +1,12 @@
-const BASE = import.meta.env.VITE_API_URL || ''
+// Backend origin. In production (e.g. Vercel) set VITE_API_BASE_URL to the
+// deployed backend URL, e.g. https://tms-api.vercel.app. Locally this is left
+// empty so the Vite dev server's /api proxy (see vite.config.js) forwards
+// requests to http://localhost:4000. VITE_API_URL is kept as a fallback for
+// backward compatibility with the previous env var name.
+const BASE =
+  import.meta.env.VITE_API_BASE_URL ||
+  import.meta.env.VITE_API_URL ||
+  ''
 
 const TOKEN_KEY = 'tms_token'
 const SESSION_EXPIRED_MESSAGE = 'Session expired. Please log in again.'
