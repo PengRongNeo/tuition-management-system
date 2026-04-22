@@ -61,25 +61,47 @@ const app = express()
 const PORT = process.env.PORT || 4000
 
 // FRONTEND_ORIGIN accepts a comma-separated list of allowed origins so the
-// same backend can serve local dev + a Vercel preview + production from the
-// same deployment. Use "*" to allow any origin (not recommended in prod).
-const allowedOrigins = (process.env.FRONTEND_ORIGIN || 'http://localhost:3000')
+// same backend can serve local dev + a Vercel preview + production from one
+// deployment. Use "*" to allow any origin (not recommended in prod).
+//
+// Local dev origins are ALWAYS allowed so forgetting to set FRONTEND_ORIGIN
+// doesn't break `vite dev` or the Vue 3000 port — this is also why the
+// deployed backend can safely ship without its own env override during
+// first-time bring-up.
+const DEFAULT_LOCAL_ORIGINS = [
+  'http://localhost:3000',
+  'http://127.0.0.1:3000',
+  'http://localhost:5173',
+  'http://127.0.0.1:5173'
+]
+const extraOrigins = (process.env.FRONTEND_ORIGIN || '')
   .split(',')
   .map((s) => s.trim())
   .filter(Boolean)
+const allowedOrigins = Array.from(new Set([...DEFAULT_LOCAL_ORIGINS, ...extraOrigins]))
+const allowAnyOrigin = extraOrigins.includes('*')
 
-app.use(
-  cors({
-    origin(origin, cb) {
-      // Allow non-browser clients (curl, health checks) which send no Origin.
-      if (!origin) return cb(null, true)
-      if (allowedOrigins.includes('*')) return cb(null, true)
-      if (allowedOrigins.includes(origin)) return cb(null, true)
-      return cb(new Error(`Not allowed by CORS: ${origin}`), false)
-    },
-    credentials: true
-  })
-)
+console.log('[cors] allowed origins:', allowAnyOrigin ? '*' : allowedOrigins)
+
+const corsOptions = {
+  origin(origin, cb) {
+    // Allow non-browser clients (curl, Vercel probes) which send no Origin.
+    if (!origin) return cb(null, true)
+    if (allowAnyOrigin) return cb(null, true)
+    if (allowedOrigins.includes(origin)) return cb(null, true)
+    console.warn(`[cors] rejected origin: ${origin}`)
+    return cb(new Error(`Not allowed by CORS: ${origin}`), false)
+  },
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Form-Secret']
+}
+
+app.use(cors(corsOptions))
+// Explicit preflight handler — some runtimes (incl. Vercel's serverless
+// functions) don't always run the short-circuit in `cors()` for OPTIONS.
+app.options('*', cors(corsOptions))
+
 app.use(express.json())
 
 // Simple health endpoint handy for Vercel / uptime checks.

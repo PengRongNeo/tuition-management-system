@@ -72,7 +72,19 @@ export default {
         }
         router.push('/dashboard')
       } catch (err) {
-        error.value = err.message || 'Invalid credentials. Please try again.'
+        console.error('[login] failed', err)
+        // Network failure (no HTTP response) — almost always a wrong API URL
+        // or a blocked CORS preflight. api.js already produced a descriptive
+        // message so we surface it; otherwise fall back to a generic one.
+        if (!err.status) {
+          error.value =
+            err.message ||
+            'Could not reach backend. Check API URL or CORS.'
+        } else if (err.status === 401) {
+          error.value = 'Invalid credentials. Please try again.'
+        } else {
+          error.value = err.message || 'Login failed. Please try again.'
+        }
       } finally {
         loading.value = false
       }

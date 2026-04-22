@@ -3,10 +3,30 @@
 // empty so the Vite dev server's /api proxy (see vite.config.js) forwards
 // requests to http://localhost:4000. VITE_API_URL is kept as a fallback for
 // backward compatibility with the previous env var name.
-const BASE =
-  import.meta.env.VITE_API_BASE_URL ||
-  import.meta.env.VITE_API_URL ||
-  ''
+function normalizeBase(raw) {
+  if (!raw) return ''
+  let s = String(raw).trim()
+  if (!s) return ''
+  // Strip trailing slashes so BASE + "/api/foo" is always exactly one slash.
+  s = s.replace(/\/+$/, '')
+  // Be forgiving if someone forgets the scheme (e.g. "myapi.vercel.app").
+  if (!/^https?:\/\//i.test(s)) {
+    console.warn(
+      `[api] VITE_API_BASE_URL "${raw}" is missing https://; assuming https://${s}. ` +
+        'Update your env to include the scheme.'
+    )
+    s = `https://${s}`
+  }
+  return s
+}
+
+const BASE = normalizeBase(
+  import.meta.env.VITE_API_BASE_URL || import.meta.env.VITE_API_URL || ''
+)
+
+if (typeof window !== 'undefined') {
+  console.info('[api] API_BASE_URL =', BASE || '(empty — using Vite dev proxy)')
+}
 
 const TOKEN_KEY = 'tms_token'
 const SESSION_EXPIRED_MESSAGE = 'Session expired. Please log in again.'
@@ -65,12 +85,23 @@ async function request(method, path, body = undefined, { requireAuth } = {}) {
     opts.headers['Content-Type'] = 'application/json'
     opts.body = JSON.stringify(body)
   }
+  const fullUrl = BASE + path
   let res
   try {
-    res = await fetch(BASE + path, opts)
+    res = await fetch(fullUrl, opts)
   } catch (networkErr) {
-    const err = new Error(networkErr.message || 'Network error. Please check your connection.')
+    // "Failed to fetch" almost always means one of:
+    //   * BASE is wrong or unreachable
+    //   * CORS rejected the request (browser blocks the response)
+    //   * User is offline
+    // We surface the full URL we tried to hit so it's obvious in DevTools.
+    console.error('[api] request failed', { method, url: fullUrl, error: networkErr })
+    const err = new Error(
+      `Could not reach backend at ${fullUrl}. ` +
+        'Check the API URL and the backend CORS configuration.'
+    )
     err.cause = networkErr
+    err.url = fullUrl
     throw err
   }
   if (res.status === 401 && needsAuth) {
