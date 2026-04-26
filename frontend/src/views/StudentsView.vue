@@ -40,8 +40,20 @@
         <p>No students found. Add your first student to get started.</p>
       </div>
       <div v-else>
-        <div class="card students-table-card">
-          <div class="students-table-scroll">
+        <section
+          v-for="section in studentLevelSections"
+          :key="section.key"
+          class="student-section-card"
+          :aria-label="section.title"
+        >
+          <div class="student-section-header">
+            <h2 class="student-section-title">{{ section.title }}</h2>
+            <span class="student-count-badge" :aria-label="`${section.students.length} students`">
+              {{ section.students.length }}
+              {{ section.students.length === 1 ? 'student' : 'students' }}
+            </span>
+          </div>
+          <div class="students-table-scroll students-table-wrap">
             <table class="table students-table">
               <thead>
                 <tr>
@@ -102,7 +114,8 @@
                     @click="toggleSort('classesEnrolled')"
                   >
                     <span class="th-sortable-inner">
-                      Classes Enrolled <span class="sort-indicator">{{ getSortIcon('classesEnrolled') }}</span>
+                      Classes Enrolled
+                      <span class="sort-indicator">{{ getSortIcon('classesEnrolled') }}</span>
                     </span>
                   </th>
                   <th
@@ -112,7 +125,8 @@
                     @click="toggleSort('feesThisMonth')"
                   >
                     <span class="th-sortable-inner">
-                      Fees This Month <span class="sort-indicator">{{ getSortIcon('feesThisMonth') }}</span>
+                      Fees This Month
+                      <span class="sort-indicator">{{ getSortIcon('feesThisMonth') }}</span>
                     </span>
                   </th>
                   <th
@@ -129,8 +143,17 @@
                 </tr>
               </thead>
               <tbody>
-                <tr v-for="student in sortedStudents" :key="student.id">
-                  <td class="col-name">{{ student.name }}</td>
+                <tr v-for="student in section.students" :key="student.id">
+                  <td class="col-name">
+                    <button
+                      type="button"
+                      class="student-name-link"
+                      :title="`View ${student.name}'s monthly billing history`"
+                      @click="openStudentBillingHistory(student)"
+                    >
+                      {{ student.name }}
+                    </button>
+                  </td>
                   <td>{{ student.school || '-' }}</td>
                   <td>{{ student.level || '-' }}</td>
                   <td>{{ student.parent_name || '-' }}</td>
@@ -157,12 +180,12 @@
                       :title="`View ${student.name}'s fee breakdown for ${currentMonthLabel}`"
                       @click="openFeeBreakdown(student)"
                     >
-                      {{ formatCurrency(getStudentFeesThisMonth(student)) }}
+                      {{ formatCurrency(getStudentFinalFeesThisMonth(student)) }}
                     </button>
                   </td>
                   <td>
-                    <span :class="student.status === 'active' ? 'badge badge-success' : 'badge badge-danger'">
-                      {{ student.status }}
+                    <span :class="getStudentStatusClass(student)">
+                      {{ getStudentStatusLabel(student) }}
                     </span>
                   </td>
                   <td class="col-actions">
@@ -182,10 +205,10 @@
               </tbody>
             </table>
           </div>
-        </div>
+        </section>
       </div>
 
-      <PendingStudentsTable @approved="loadStudents" />
+      <PendingStudentsTable @approved="onPendingStudentsUpdated" />
 
       <!-- Create/Edit Student Modal -->
       <div v-if="showCreateModal || showEditModal" class="modal-overlay" @click="closeModal">
@@ -197,16 +220,13 @@
               <input v-model="formData.name" required />
             </div>
             <div class="form-group">
-              <label for="student-school">School</label>
-              <SearchableSchoolSelect
-                id="student-school"
-                v-model="formData.school"
-                placeholder="Search or select school"
-              />
-            </div>
-            <div class="form-group">
-              <label for="student-level">Level</label>
-              <select id="student-level" v-model="formData.level" required>
+              <label for="student-level">Level *</label>
+              <select
+                id="student-level"
+                v-model="formData.level"
+                required
+                @change="onLevelChange"
+              >
                 <option value="" disabled>Select level</option>
                 <option v-for="lvl in studentLevels" :key="lvl" :value="lvl">{{ lvl }}</option>
                 <option
@@ -216,6 +236,15 @@
                   {{ formData.level }}
                 </option>
               </select>
+            </div>
+            <div class="form-group">
+              <label for="student-school">School *</label>
+              <SearchableSchoolSelect
+                id="student-school"
+                v-model="formData.school"
+                :level="formData.level"
+                placeholder="Search or select school"
+              />
             </div>
             <div class="form-group">
               <label>Parent Name *</label>
@@ -232,8 +261,19 @@
             <div class="form-group">
               <label>Status *</label>
               <select v-model="formData.status" required>
-                <option value="active">Active</option>
-                <option value="inactive">Inactive</option>
+                <option
+                  v-for="opt in studentStatusOptions"
+                  :key="opt.value"
+                  :value="opt.value"
+                >
+                  {{ opt.label }}
+                </option>
+                <option
+                  v-if="formData.status === 'inactive'"
+                  :value="legacyInactiveOption.value"
+                >
+                  {{ legacyInactiveOption.label }}
+                </option>
               </select>
             </div>
             <div v-if="error" class="error">{{ error }}</div>
@@ -264,8 +304,8 @@
             <p><strong>Parent Email:</strong> {{ selectedStudent.parent_email || '-' }}</p>
             <p>
               <strong>Status:</strong>
-              <span :class="selectedStudent.status === 'active' ? 'badge badge-success' : 'badge badge-danger'">
-                {{ selectedStudent.status }}
+              <span :class="getStudentStatusClass(selectedStudent)">
+                {{ getStudentStatusLabel(selectedStudent) }}
               </span>
             </p>
           </div>
@@ -479,12 +519,43 @@
               </tbody>
               <tfoot>
                 <tr class="fee-total-row">
-                  <td colspan="7">Total</td>
+                  <td colspan="7">Lesson total</td>
                   <td class="fee-col-rate">{{ formatCurrency(selectedFeeTotal) }}</td>
                   <td></td>
                 </tr>
               </tfoot>
             </table>
+          </div>
+
+          <div
+            v-if="selectedFeeBreakdown.length > 0"
+            class="bill-summary-section"
+          >
+            <div class="bill-summary-row">
+              <span>Lesson total</span>
+              <strong>{{ formatCurrency(selectedFeeTotal) }}</strong>
+            </div>
+            <template v-if="feeModalAppliedItems.length > 0">
+              <p class="bill-summary-sub">Adjustments</p>
+              <div
+                v-for="adj in feeModalAppliedItems"
+                :key="adj.key"
+                class="bill-summary-row bill-summary-adjust"
+              >
+                <span>{{ adj.label }}</span>
+                <span>{{ formatSignedCurrency(adj.amount) }}</span>
+              </div>
+            </template>
+            <p
+              v-else
+              class="bill-summary-none"
+            >
+              No bill adjustments.
+            </p>
+            <div class="bill-summary-row bill-summary-final">
+              <span>Final total</span>
+              <strong>{{ formatCurrency(feeModalFinalTotal) }}</strong>
+            </div>
           </div>
 
           <p
@@ -496,6 +567,14 @@
           </p>
 
           <div class="fee-modal-actions">
+            <button
+              v-if="selectedFeeBreakdown.length > 0"
+              type="button"
+              class="btn btn-primary"
+              @click="openModifyBill"
+            >
+              Modify Bill
+            </button>
             <button
               type="button"
               class="btn btn-whatsapp"
@@ -511,13 +590,188 @@
           </div>
         </div>
       </div>
+
+      <!-- Modify bill (preset adjustments) -->
+      <div
+        v-if="showModifyBillModal"
+        class="modal-overlay"
+        @click.self="closeModifyBill"
+      >
+        <div class="modal-content modify-bill-modal" @click.stop>
+          <h2>Modify Bill</h2>
+          <p class="modify-bill-subtitle">
+            Apply preset bill adjustments for this student’s monthly invoice.
+          </p>
+          <p class="modify-bill-hint">
+            Select one or more items below. Most amounts are fixed. Free Trial credits the
+            <strong> earliest charged lesson</strong> in the table above (one lesson only).
+          </p>
+          <ul class="modify-bill-list" role="list">
+            <li
+              v-for="preset in BILL_ADJUSTMENT_PRESETS"
+              :key="preset.key"
+              class="modify-bill-item"
+            >
+              <label class="modify-bill-label">
+                <input
+                  type="checkbox"
+                  :checked="isModifyBillKeyOn(preset.key)"
+                  @change="toggleModifyBillKey(preset.key)"
+                />
+                <span>{{ preset.label }}</span>
+                <span
+                  v-if="preset.type === 'dynamic' && preset.key === 'freeTrial'"
+                  class="modify-bill-amount"
+                >{{ formatFreeTrialParens(firstChargedLessonFeeForSelected) }}</span>
+                <span v-else class="modify-bill-amount">({{ formatSignedCurrency(preset.amount) }})</span>
+              </label>
+            </li>
+          </ul>
+          <div class="fee-modal-actions modify-bill-actions">
+            <button
+              type="button"
+              class="btn btn-primary"
+              :disabled="savingBillAdjustments"
+              @click="saveBillAdjustments"
+            >
+              {{ savingBillAdjustments ? 'Saving...' : 'Save Adjustments' }}
+            </button>
+            <button
+              type="button"
+              class="btn btn-secondary"
+              :disabled="savingBillAdjustments"
+              @click="closeModifyBill"
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Student Billing History Modal -->
+      <div
+        v-if="showBillingHistoryModal"
+        class="modal-overlay"
+        @click.self="closeBillingHistory"
+      >
+        <div class="modal-content billing-history-modal" @click.stop>
+          <div class="billing-history-header">
+            <div>
+              <h2>Student Billing History</h2>
+              <p class="billing-history-subtitle">
+                {{ selectedBillingStudent?.name }} — Monthly lesson records and fees
+              </p>
+            </div>
+            <button
+              type="button"
+              class="billing-history-close"
+              @click="closeBillingHistory"
+              aria-label="Close"
+            >&times;</button>
+          </div>
+
+          <div v-if="billingHistoryLoading" class="loading">
+            Loading billing history...
+          </div>
+          <div v-else-if="billingHistoryError" class="error">
+            {{ billingHistoryError }}
+          </div>
+          <div
+            v-else-if="selectedStudentMonthlyBilling.length === 0"
+            class="fee-empty"
+          >
+            No lesson records found for this student.
+          </div>
+          <div v-else class="billing-history-body">
+            <section
+              v-for="month in selectedStudentMonthlyBilling"
+              :key="month.monthKey"
+              class="billing-month-card"
+            >
+              <div class="billing-month-header">
+                <h3>{{ month.monthLabel }}</h3>
+                <div class="billing-month-totals">
+                  <span class="billing-month-line">
+                    Lesson total: {{ formatCurrency(month.lessonTotalFees) }}
+                  </span>
+                  <template v-if="month.billAdjustmentItems.length">
+                    <span
+                      v-for="(it, bi) in month.billAdjustmentItems"
+                      :key="bi"
+                      class="billing-month-line billing-month-adj"
+                    >
+                      {{ it.label }}: {{ formatSignedCurrency(it.amount) }}
+                    </span>
+                  </template>
+                  <span class="billing-month-total billing-month-final">
+                    Final total: {{ formatCurrency(month.finalTotal) }}
+                  </span>
+                </div>
+              </div>
+              <div class="billing-history-table-scroll">
+                <table class="table billing-history-table">
+                  <thead>
+                    <tr>
+                      <th>Lesson Date</th>
+                      <th>Time</th>
+                      <th>Subject</th>
+                      <th>Class</th>
+                      <th>Status</th>
+                      <th>Duration</th>
+                      <th class="fee-col-rate">Fee Charged</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr
+                      v-for="record in month.records"
+                      :key="record.attendanceId || (record.lessonId + '-' + record.lessonDate.toISOString())"
+                    >
+                      <td>{{ formatBreakdownDate(record.lessonDate) }}</td>
+                      <td>{{ record.time }}</td>
+                      <td>
+                        <div class="billing-subject-cell">
+                          <span>{{ record.subject || '—' }}</span>
+                          <span v-if="record.isMakeup" class="makeup-badge">Makeup</span>
+                        </div>
+                      </td>
+                      <td>{{ record.className }}</td>
+                      <td>
+                        <span :class="feeStatusBadgeClass(record.status)">
+                          {{ record.status }}
+                        </span>
+                      </td>
+                      <td>{{ formatDurationLabel(record.durationHours) }}</td>
+                      <td class="fee-col-rate">{{ formatCurrency(record.feeCharged) }}</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </section>
+          </div>
+
+          <div class="fee-modal-actions">
+            <button type="button" class="btn btn-secondary" @click="closeBillingHistory">
+              Close
+            </button>
+          </div>
+        </div>
+      </div>
     </div>
   </div>
 </template>
 
 <script>
 import { ref, reactive, computed, onMounted } from 'vue'
-import { collection, getDocs, query, where } from 'firebase/firestore'
+import {
+  collection,
+  doc,
+  getDoc,
+  getDocs,
+  query,
+  where,
+  setDoc,
+  serverTimestamp
+} from 'firebase/firestore'
 import { api } from '../api'
 import { db, auth } from '../firebase'
 import Navbar from '../components/Navbar.vue'
@@ -537,6 +791,39 @@ import {
   getAttendanceDuration,
   formatDurationLabel
 } from '../constants/billing'
+import { isMissedLesson } from '../constants/lessons'
+import {
+  STUDENT_STATUS_OPTIONS,
+  STUDENT_STATUS_LEGACY_INACTIVE,
+  isStudentActive,
+  getStudentStatusRank,
+  getStudentStatusLabel,
+  getStudentStatusClass
+} from '../constants/studentStatus'
+import {
+  BILL_ADJUSTMENT_PRESETS,
+  buildBillItemsFromKeys,
+  sumBillItemAmounts,
+  formatSignedCurrency,
+  formatFreeTrialParens,
+  getFirstChargedLessonFeeFromBreakdown,
+  getBillAdjustmentMonthKeyFromDate
+} from '../constants/billAdjustments'
+import { useAdminData } from '../composables/useAdminData'
+
+function isPrimaryStudent(student) {
+  return String(student?.level || '')
+    .trim()
+    .toLowerCase()
+    .startsWith('pri')
+}
+
+function isSecondaryStudent(student) {
+  return String(student?.level || '')
+    .trim()
+    .toLowerCase()
+    .startsWith('sec')
+}
 
 export default {
   name: 'StudentsView',
@@ -546,9 +833,21 @@ export default {
     PendingStudentsTable
   },
   setup() {
-    const loading = ref(true)
-    const students = ref([])
-    const classes = ref([])
+    const {
+      students,
+      classes,
+      lessons: lessonsStore,
+      attendance: attendanceStore,
+      loadAdminData,
+      refreshStudents,
+      refreshClasses,
+      refreshLessons,
+      refreshAttendance,
+      refreshPendingStudents,
+      isLoaded,
+      isLoading
+    } = useAdminData()
+    const loading = computed(() => isLoading.value && !isLoaded.value)
     const showCreateModal = ref(false)
     const showEditModal = ref(false)
     const selectedStudent = ref(null)
@@ -610,9 +909,60 @@ export default {
       new Date().toLocaleDateString('en-SG', { month: 'long', year: 'numeric' })
     )
 
+    const currentMonthKey = computed(() =>
+      getBillAdjustmentMonthKeyFromDate(new Date())
+    )
+
+    const BILL_ADJ_COLLECTION = 'billAdjustments'
+
+    const showModifyBillModal = ref(false)
+    const modifyBillDraftKeys = ref([])
+    const feeModalSelectedKeys = ref([])
+    const billAdjustmentsByKey = ref({})
+    const savingBillAdjustments = ref(false)
+    const billingHistoryAdjustmentsByMonth = ref({})
+
+    const billAdjustmentsDocId = (studentId, monthKey) => `${studentId}_${monthKey}`
+
+    const loadAllBillAdjustments = async () => {
+      try {
+        await auth.authStateReady?.()
+        if (!auth.currentUser) {
+          billAdjustmentsByKey.value = {}
+          return
+        }
+        const snap = await getDocs(collection(db, BILL_ADJ_COLLECTION))
+        const next = {}
+        snap.forEach((d) => {
+          const data = d.data()
+          const sid = data.studentId
+          const mk = data.monthKey
+          if (sid && mk) {
+            next[billAdjustmentsDocId(sid, mk)] = { id: d.id, ...data }
+          }
+        })
+        billAdjustmentsByKey.value = next
+      } catch (e) {
+        console.error('loadAllBillAdjustments:', e)
+      }
+    }
+
+    const getBillDoc = (studentId, monthKey) => {
+      if (!studentId || !monthKey) return null
+      return billAdjustmentsByKey.value[billAdjustmentsDocId(studentId, monthKey)] || null
+    }
+
+    const getBillAdjustmentTotalForStudentMonth = (studentId, monthKey) => {
+      const d = getBillDoc(studentId, monthKey)
+      if (!d) return 0
+      if (d.totalAdjustmentAmount != null) return Number(d.totalAdjustmentAmount) || 0
+      return sumBillItemAmounts(d.items)
+    }
+
     const loadMonthlyFees = async () => {
       feesLoading.value = true
       try {
+        await loadAdminData()
         await auth.authStateReady?.()
         if (!auth.currentUser) {
           monthlyLessons.value = []
@@ -627,43 +977,24 @@ export default {
         const lastStr = `${y}-${pad2(m + 1)}-${pad2(new Date(y, m + 1, 0).getDate())}`
         const todayEnd = new Date(y, m, now.getDate(), 23, 59, 59, 999)
 
-        // Lessons collection uses snake_case `lesson_date` (string "YYYY-MM-DD").
-        // Range query on a single field does not need a composite index.
-        const lessonsQ = query(
-          collection(db, 'lessons'),
-          where('lesson_date', '>=', firstStr),
-          where('lesson_date', '<=', lastStr)
-        )
-        const lessonsSnap = await getDocs(lessonsQ)
-        const lessons = lessonsSnap.docs
-          .map((d) => ({ id: d.id, ...d.data() }))
-          .filter((l) => {
-            const d = parseLessonDate(l.lesson_date || l.lessonDate)
-            return d && d <= todayEnd
-          })
-        monthlyLessons.value = lessons
-
-        const lessonIds = lessons.map((l) => l.id)
-        if (lessonIds.length === 0) {
+        const inMonth = (l) => {
+          const dStr = l.lesson_date || l.lessonDate
+          if (!dStr || typeof dStr !== 'string' || dStr < firstStr || dStr > lastStr) {
+            return false
+          }
+          const d = parseLessonDate(dStr)
+          return d && d <= todayEnd
+        }
+        const mLessons = (lessonsStore.value || []).filter(inMonth)
+        monthlyLessons.value = mLessons
+        const idSet = new Set(mLessons.map((l) => l.id).filter(Boolean))
+        if (idSet.size === 0) {
           monthlyAttendance.value = []
-          return
-        }
-
-        // Firestore `in` accepts up to 30 values per query, so we chunk.
-        const chunks = []
-        for (let i = 0; i < lessonIds.length; i += 30) {
-          chunks.push(lessonIds.slice(i, i + 30))
-        }
-        const all = []
-        for (const chunk of chunks) {
-          const q2 = query(
-            collection(db, 'attendance'),
-            where('lesson_id', 'in', chunk)
+        } else {
+          monthlyAttendance.value = (attendanceStore.value || []).filter((a) =>
+            idSet.has(a.lesson_id || a.lessonId)
           )
-          const snap = await getDocs(q2)
-          snap.docs.forEach((d) => all.push({ id: d.id, ...d.data() }))
         }
-        monthlyAttendance.value = all
       } catch (err) {
         console.error('Error loading monthly fees:', err)
         monthlyLessons.value = []
@@ -671,6 +1002,7 @@ export default {
       } finally {
         feesLoading.value = false
       }
+      loadAllBillAdjustments()
     }
 
     // Build once per (lessons, attendance, classes) change: a per-student
@@ -691,17 +1023,30 @@ export default {
         const cls = classId ? classMap[classId] : null
         const ratePerHour = getClassRatePerHour(cls)
         const durationHours = getAttendanceDuration(att, lesson, cls)
-        const normalizedStatus = normalizeAttendanceStatus(att.status)
-        const chargeable = isChargeableAttendance(att.status)
-        const rateCharged = chargeable ? ratePerHour * durationHours : 0
+        const missed =
+          isMissedLesson(lesson) ||
+          normalizeAttendanceStatus(att.status) === ATTENDANCE_STATUSES.MISSED
+        const normalizedStatus = missed
+          ? ATTENDANCE_STATUSES.MISSED
+          : normalizeAttendanceStatus(att.status)
+        const chargeable =
+          !missed && isChargeableAttendance(att.status)
+        const rateCharged = missed
+          ? 0
+          : (chargeable ? ratePerHour * durationHours : 0)
         const isMakeup = Boolean(att.is_makeup ?? att.isMakeup)
         const lessonDate = parseLessonDate(lesson.lesson_date || lesson.lessonDate)
         const day = lessonDate
           ? lessonDate.toLocaleDateString('en-SG', { weekday: 'long' })
           : (cls?.day_of_week || '—')
+        const startL = lesson.start_time || lesson.startTime
+        const endL = lesson.end_time || lesson.endTime
         const startT = cls?.start_time || ''
         const endT = cls?.end_time || ''
-        const time = startT && endT ? `${startT} - ${endT}` : (startT || '—')
+        const time =
+          startL && endL
+            ? `${startL} - ${endL}`
+            : (startT && endT ? `${startT} - ${endT}` : (startT || '—'))
         const entry = {
           attendanceId: att.id || null,
           lessonId: lesson.id,
@@ -737,6 +1082,14 @@ export default {
       return feesThisMonthByStudent.value[student.id]?.total || 0
     }
 
+    const getStudentFinalFeesThisMonth = (student) => {
+      if (!student) return 0
+      return (
+        getStudentFeesThisMonth(student) +
+        getBillAdjustmentTotalForStudentMonth(student.id, currentMonthKey.value)
+      )
+    }
+
     const getStudentFeeBreakdown = (student) => {
       if (!student) return []
       return feesThisMonthByStudent.value[student.id]?.breakdown || []
@@ -744,21 +1097,322 @@ export default {
 
     const openFeeBreakdown = (student) => {
       selectedFeeStudent.value = student
+      const doc = getBillDoc(student.id, currentMonthKey.value)
+      const items = doc?.items
+      if (Array.isArray(items) && items.length) {
+        feeModalSelectedKeys.value = items.map((i) => i.key).filter(Boolean)
+      } else {
+        feeModalSelectedKeys.value = []
+      }
       showFeeBreakdownModal.value = true
     }
 
     const closeFeeBreakdown = () => {
       showFeeBreakdownModal.value = false
+      showModifyBillModal.value = false
       selectedFeeStudent.value = null
+      feeModalSelectedKeys.value = []
+      modifyBillDraftKeys.value = []
     }
 
     const selectedFeeBreakdown = computed(() =>
       selectedFeeStudent.value ? getStudentFeeBreakdown(selectedFeeStudent.value) : []
     )
 
-    const selectedFeeTotal = computed(() =>
-      selectedFeeBreakdown.value.reduce((sum, item) => sum + (item.rateCharged || 0), 0)
+    /** First charged lesson fee this month (earliest date) — for Free Trial adjustment. */
+    const firstChargedLessonFeeForSelected = computed(() =>
+      getFirstChargedLessonFeeFromBreakdown(selectedFeeBreakdown.value)
     )
+
+    const selectedFeeTotal = computed(() =>
+      selectedFeeBreakdown.value.reduce(
+        (sum, item) => sum + (item.rateCharged ?? item.feeCharged ?? 0),
+        0
+      )
+    )
+
+    const feeModalAppliedItems = computed(() =>
+      buildBillItemsFromKeys(feeModalSelectedKeys.value, {
+        firstChargedLessonAmount: firstChargedLessonFeeForSelected.value
+      })
+    )
+    const feeModalAdjustmentsTotal = computed(() =>
+      sumBillItemAmounts(feeModalAppliedItems.value)
+    )
+    const feeModalFinalTotal = computed(
+      () => selectedFeeTotal.value + feeModalAdjustmentsTotal.value
+    )
+
+    const openModifyBill = () => {
+      modifyBillDraftKeys.value = [...feeModalSelectedKeys.value]
+      showModifyBillModal.value = true
+    }
+    const closeModifyBill = () => {
+      showModifyBillModal.value = false
+    }
+    const toggleModifyBillKey = (key) => {
+      const next = [...modifyBillDraftKeys.value]
+      const i = next.indexOf(key)
+      if (i >= 0) next.splice(i, 1)
+      else next.push(key)
+      modifyBillDraftKeys.value = next
+    }
+    const isModifyBillKeyOn = (key) => modifyBillDraftKeys.value.includes(key)
+
+    const saveBillAdjustments = async () => {
+      if (!selectedFeeStudent.value?.id) return
+      const studentId = selectedFeeStudent.value.id
+      const monthKey = currentMonthKey.value
+      const firstCharged = getFirstChargedLessonFeeFromBreakdown(
+        selectedFeeBreakdown.value
+      )
+      const items = buildBillItemsFromKeys(modifyBillDraftKeys.value, {
+        firstChargedLessonAmount: firstCharged
+      })
+      const total = sumBillItemAmounts(items)
+      savingBillAdjustments.value = true
+      try {
+        await setDoc(
+          doc(db, BILL_ADJ_COLLECTION, billAdjustmentsDocId(studentId, monthKey)),
+          {
+            studentId,
+            monthKey,
+            items,
+            totalAdjustmentAmount: total,
+            updatedAt: serverTimestamp()
+          }
+        )
+        await loadAllBillAdjustments()
+        feeModalSelectedKeys.value = [...modifyBillDraftKeys.value]
+        showModifyBillModal.value = false
+      } catch (e) {
+        console.error('saveBillAdjustments:', e)
+        alert(e?.message || 'Failed to save bill adjustments.')
+      } finally {
+        savingBillAdjustments.value = false
+      }
+    }
+
+    // --- Student billing history (all months) ---
+    const showBillingHistoryModal = ref(false)
+    const selectedBillingStudent = ref(null)
+    const billingHistoryLoading = ref(false)
+    const billingHistoryError = ref('')
+    const billingHistoryAttendance = ref([])
+    const billingHistoryLessons = ref([])
+
+    const closeBillingHistory = () => {
+      showBillingHistoryModal.value = false
+      selectedBillingStudent.value = null
+      billingHistoryAttendance.value = []
+      billingHistoryLessons.value = []
+      billingHistoryError.value = ''
+      billingHistoryAdjustmentsByMonth.value = {}
+    }
+
+    const loadStudentBillingHistory = async (student) => {
+      if (!student?.id) return
+      billingHistoryLoading.value = true
+      billingHistoryAttendance.value = []
+      billingHistoryLessons.value = []
+      billingHistoryError.value = ''
+      try {
+        await auth.authStateReady?.()
+        if (!auth.currentUser) {
+          throw new Error('Not signed in. Please log in again.')
+        }
+
+        // Support both naming conventions for the student ID on attendance docs.
+        const [snakeSnap, camelSnap] = await Promise.all([
+          getDocs(
+            query(collection(db, 'attendance'), where('student_id', '==', student.id))
+          ),
+          getDocs(
+            query(collection(db, 'attendance'), where('studentId', '==', student.id))
+          )
+        ])
+        const seen = new Set()
+        const atts = []
+        for (const d of [...snakeSnap.docs, ...camelSnap.docs]) {
+          if (seen.has(d.id)) continue
+          seen.add(d.id)
+          atts.push({ id: d.id, ...d.data() })
+        }
+        billingHistoryAttendance.value = atts
+
+        // Reuse any lessons already cached from the current-month fetch, and
+        // only pull the ones we haven't seen yet. Doc-level reads in parallel
+        // keep this fast for typical histories (tens of lessons).
+        const lessonIds = Array.from(
+          new Set(atts.map((a) => a.lesson_id || a.lessonId).filter(Boolean))
+        )
+        const monthlyLessonById = {}
+        for (const l of monthlyLessons.value) monthlyLessonById[l.id] = l
+
+        const alreadyHave = lessonIds
+          .map((id) => monthlyLessonById[id])
+          .filter(Boolean)
+        const missingIds = lessonIds.filter((id) => !monthlyLessonById[id])
+
+        const fetched = await Promise.all(
+          missingIds.map(async (id) => {
+            try {
+              const snap = await getDoc(doc(db, 'lessons', id))
+              return snap.exists() ? { id: snap.id, ...snap.data() } : null
+            } catch (_) {
+              return null
+            }
+          })
+        )
+        billingHistoryLessons.value = [...alreadyHave, ...fetched.filter(Boolean)]
+
+        const adjSnap = await getDocs(
+          query(
+            collection(db, BILL_ADJ_COLLECTION),
+            where('studentId', '==', student.id)
+          )
+        )
+        const byMonth = {}
+        adjSnap.forEach((d) => {
+          const data = d.data()
+          if (!data.monthKey) return
+          byMonth[data.monthKey] = {
+            items: Array.isArray(data.items) ? data.items : [],
+            total:
+              data.totalAdjustmentAmount != null
+                ? Number(data.totalAdjustmentAmount) || 0
+                : sumBillItemAmounts(data.items || [])
+          }
+        })
+        billingHistoryAdjustmentsByMonth.value = byMonth
+      } catch (err) {
+        console.error('Error loading billing history:', err)
+        billingHistoryError.value =
+          err.message || 'Failed to load billing history.'
+      } finally {
+        billingHistoryLoading.value = false
+      }
+    }
+
+    const openStudentBillingHistory = async (student) => {
+      selectedBillingStudent.value = student
+      showBillingHistoryModal.value = true
+      billingHistoryError.value = ''
+      await loadStudentBillingHistory(student)
+    }
+
+    // Group all attendance + lesson + class data for the selected student into
+    // { monthKey, monthLabel, totalFees, records[] } blocks. Future-dated
+    // lessons are excluded so the view always shows "history".
+    const selectedStudentMonthlyBilling = computed(() => {
+      if (!selectedBillingStudent.value) return []
+
+      const lessonById = {}
+      for (const l of billingHistoryLessons.value) lessonById[l.id] = l
+      const classById = {}
+      for (const c of classes.value) classById[c.id] = c
+
+      const now = new Date()
+      const todayEnd = new Date(
+        now.getFullYear(),
+        now.getMonth(),
+        now.getDate(),
+        23,
+        59,
+        59,
+        999
+      )
+
+      const groups = {}
+      for (const att of billingHistoryAttendance.value) {
+        const lesson = lessonById[att.lesson_id || att.lessonId]
+        if (!lesson) continue
+        const lessonDate = parseLessonDate(
+          lesson.lesson_date || lesson.lessonDate || lesson.date
+        )
+        if (!lessonDate) continue
+        if (lessonDate > todayEnd) continue
+
+        const classId =
+          lesson.class_id || lesson.classId || att.class_id || att.classId
+        const classObj = classId ? classById[classId] : null
+
+        const ratePerHour = getClassRatePerHour(classObj)
+        const durationHours = getAttendanceDuration(att, lesson, classObj)
+        const missed =
+          isMissedLesson(lesson) ||
+          normalizeAttendanceStatus(att.status) === ATTENDANCE_STATUSES.MISSED
+        const status = missed
+          ? ATTENDANCE_STATUSES.MISSED
+          : normalizeAttendanceStatus(att.status)
+        const chargeable = !missed && isChargeableAttendance(att.status)
+        const feeCharged = missed ? 0 : (chargeable ? ratePerHour * durationHours : 0)
+        const isMakeup = Boolean(att.is_makeup ?? att.isMakeup)
+
+        const className =
+          classObj?.name || lesson.class_name || lesson.className || '—'
+        const subject =
+          lesson.subject ||
+          classObj?.subject ||
+          extractSubjectFromClassName(className) ||
+          ''
+
+        const startT =
+          lesson.start_time || lesson.startTime || classObj?.start_time || ''
+        const endT =
+          lesson.end_time || lesson.endTime || classObj?.end_time || ''
+        const time = startT && endT ? `${startT} - ${endT}` : startT || '—'
+
+        const y = lessonDate.getFullYear()
+        const m = lessonDate.getMonth() + 1
+        const monthKey = `${y}-${String(m).padStart(2, '0')}`
+        const monthLabel = lessonDate.toLocaleDateString('en-SG', {
+          month: 'long',
+          year: 'numeric'
+        })
+
+        if (!groups[monthKey]) {
+          groups[monthKey] = {
+            monthKey,
+            monthLabel,
+            totalFees: 0,
+            records: []
+          }
+        }
+        groups[monthKey].totalFees += feeCharged
+        groups[monthKey].records.push({
+          attendanceId: att.id,
+          lessonId: lesson.id,
+          lessonDate,
+          time,
+          subject,
+          className,
+          status,
+          durationHours,
+          ratePerHour,
+          feeCharged,
+          isMakeup
+        })
+      }
+
+      const adjMap = billingHistoryAdjustmentsByMonth.value || {}
+
+      return Object.values(groups)
+        .map((g) => {
+          const adj = adjMap[g.monthKey] || { items: [], total: 0 }
+          const lessonTotal = g.totalFees
+          const billAdj = Number(adj.total) || 0
+          return {
+            ...g,
+            lessonTotalFees: lessonTotal,
+            billAdjustmentItems: adj.items || [],
+            billAdjustmentTotal: billAdj,
+            finalTotal: lessonTotal + billAdj,
+            records: g.records.sort((a, b) => a.lessonDate - b.lessonDate)
+          }
+        })
+        .sort((a, b) => b.monthKey.localeCompare(a.monthKey))
+    })
 
     // --- Inline attendance editing inside the fee breakdown popup ---
     const editingFeeRowId = ref(null)
@@ -811,6 +1465,7 @@ export default {
       editingFeeRowSaving.value = true
       try {
         await api.delete(`/api/attendance/${item.attendanceId}`)
+        await refreshAttendance()
         await loadMonthlyFees()
         cancelEditFeeRow()
       } catch (err) {
@@ -847,6 +1502,7 @@ export default {
         // Reload the underlying attendance/lessons so the breakdown,
         // monthly total, students table, and any sibling WhatsApp message
         // all use the updated record.
+        await refreshAttendance()
         await loadMonthlyFees()
         cancelEditFeeRow()
       } catch (err) {
@@ -864,6 +1520,7 @@ export default {
         case ATTENDANCE_STATUSES.LATE: return 'badge badge-warning'
         case ATTENDANCE_STATUSES.ABSENT_CHARGED: return 'badge badge-danger'
         case ATTENDANCE_STATUSES.ABSENT_VALID: return 'badge badge-muted'
+        case ATTENDANCE_STATUSES.MISSED: return 'badge badge-muted'
         default: return 'badge'
       }
     }
@@ -1036,11 +1693,36 @@ export default {
         : []
     )
 
+    const getWhatsappBillTotalsForStudent = (s) => {
+      const lesson = getStudentFeesThisMonth(s)
+      const final = getStudentFinalFeesThisMonth(s)
+      const items = getBillDoc(s.id, currentMonthKey.value)?.items || []
+      return { lesson, final, items }
+    }
+
     const getWhatsappFeeMessage = (student) => {
       const parentName =
         student?.parent_name || student?.parentName || 'Parent'
       const month = currentMonthLabel.value
       const related = getStudentsWithSameParentContact(student)
+
+      const blockForStudent = (s) => {
+        const { lesson, final, items } = getWhatsappBillTotalsForStudent(s)
+        const name = s?.name || 'Student'
+        if (items.length) {
+          return (
+            `Lesson Total: ${formatWhatsappCurrency(lesson)}\n` +
+            `Adjustments:\n${items
+              .map(
+                (it) =>
+                  `${it.label}: ${formatSignedCurrency(Number(it.amount) || 0)}`
+              )
+              .join('\n')}\n` +
+            `Final Total: ${formatWhatsappCurrency(final)}`
+          )
+        }
+        return `Total: ${formatWhatsappCurrency(lesson)}`
+      }
 
       // Single-student message (no matched siblings, or no contact match).
       if (related.length <= 1) {
@@ -1051,12 +1733,11 @@ export default {
           ? `${possessive} ${subjectsText} tuition`
           : `${possessive} tuition`
         const studentName = only?.name || 'Student'
-        const studentTotal = getStudentFeesThisMonth(only)
 
         return (
           `Hi ${parentName}, this is the fees for ${tuitionText} for the month of ${month}.\n\n` +
           `Lesson dates and timings:\n${getStudentLessonLines(only)}\n\n` +
-          `Total for ${studentName}: ${formatWhatsappCurrency(studentTotal)}\n\n` +
+          `Total for ${studentName}:\n${blockForStudent(only)}\n\n` +
           `Please check and let us know if there are any errors. Thank you!`
         )
       }
@@ -1069,17 +1750,16 @@ export default {
           const header = subjectsText
             ? `${childName} — ${subjectsText}`
             : `${childName} — Tuition`
-          const childTotal = getStudentFeesThisMonth(child)
           return (
             `${header}\n` +
             `Lesson dates and timings:\n${getStudentLessonLines(child)}\n` +
-            `Total for ${childName}: ${formatWhatsappCurrency(childTotal)}`
+            `Fees for ${childName}:\n${blockForStudent(child)}`
           )
         })
         .join('\n\n')
 
       const combinedTotal = related.reduce(
-        (sum, child) => sum + (getStudentFeesThisMonth(child) || 0),
+        (sum, child) => sum + (getStudentFinalFeesThisMonth(child) || 0),
         0
       )
 
@@ -1207,7 +1887,7 @@ export default {
 
     const getSortValue = (student, key) => {
       if (key === 'classesEnrolled') return getClassesEnrolled(student)
-      if (key === 'feesThisMonth') return getStudentFeesThisMonth(student)
+      if (key === 'feesThisMonth') return getStudentFinalFeesThisMonth(student)
       if (key === 'level') {
         const lvl = student.level
         if (lvl && Object.prototype.hasOwnProperty.call(LEVEL_ORDER, lvl)) {
@@ -1220,9 +1900,22 @@ export default {
 
     const sortedStudents = computed(() => {
       const list = [...students.value]
-      if (!sortKey.value) return list
 
       return list.sort((a, b) => {
+        // Active students always come before inactive-status students,
+        // regardless of the selected sort column or direction. Sorting still
+        // applies within each group.
+        const rankA = getStudentStatusRank(a)
+        const rankB = getStudentStatusRank(b)
+        if (rankA !== rankB) return rankA - rankB
+
+        if (!sortKey.value) {
+          return (a.name || '').localeCompare(b.name || '', undefined, {
+            sensitivity: 'base',
+            numeric: true
+          })
+        }
+
         const valueA = getSortValue(a, sortKey.value)
         const valueB = getSortValue(b, sortKey.value)
 
@@ -1247,39 +1940,57 @@ export default {
       })
     })
 
+    const primaryStudents = computed(() =>
+      sortedStudents.value.filter((s) => isPrimaryStudent(s))
+    )
+    const secondaryStudents = computed(() =>
+      sortedStudents.value.filter((s) => isSecondaryStudent(s))
+    )
+    const unassignedLevelStudents = computed(() =>
+      sortedStudents.value.filter(
+        (s) => !isPrimaryStudent(s) && !isSecondaryStudent(s)
+      )
+    )
+
+    // One table per level band; empty groups are omitted so the page does not
+    // show blank tables. Sorting is inherited from `sortedStudents` (active
+    // first, then column sort) within each group.
+    const studentLevelSections = computed(() => {
+      const sections = []
+      if (primaryStudents.value.length) {
+        sections.push({
+          key: 'primary',
+          title: 'Primary School Students',
+          students: primaryStudents.value
+        })
+      }
+      if (secondaryStudents.value.length) {
+        sections.push({
+          key: 'secondary',
+          title: 'Secondary School Students',
+          students: secondaryStudents.value
+        })
+      }
+      if (unassignedLevelStudents.value.length) {
+        sections.push({
+          key: 'unassigned',
+          title: 'Unassigned Level',
+          students: unassignedLevelStudents.value
+        })
+      }
+      return sections
+    })
+
     const formatDate = (timestamp) => {
       if (!timestamp) return ''
       const date = timestamp?.toDate ? timestamp.toDate() : new Date(timestamp)
       return date.toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' })
     }
 
-    const handleApiError = (err, resource) => {
-      if (err?.status === 401) {
-        error.value = 'Session expired. Please log in again.'
-        return
-      }
-      console.error(`Error loading ${resource}:`, err)
-      error.value = err?.message || `Error loading ${resource}`
-    }
-
-    const loadStudents = async () => {
-      try {
-        const list = await api.get('/api/students')
-        students.value = (list || []).sort((a, b) => (a.name || '').localeCompare(b.name || ''))
-      } catch (err) {
-        handleApiError(err, 'students')
-      } finally {
-        loading.value = false
-      }
-    }
-
-    const loadClasses = async () => {
-      try {
-        const list = await api.get('/api/classes')
-        classes.value = list || []
-      } catch (err) {
-        handleApiError(err, 'classes')
-      }
+    const onPendingStudentsUpdated = async () => {
+      await refreshStudents()
+      await refreshPendingStudents()
+      await loadMonthlyFees()
     }
 
     const editStudent = (student) => {
@@ -1317,7 +2028,7 @@ export default {
       try {
         await api.post('/api/enrolments', { student_id: selectedStudent.value.id, class_id: newEnrollmentClassId.value })
         newEnrollmentClassId.value = ''
-        await loadStudents()
+        await Promise.all([refreshStudents(), refreshClasses()])
         await viewStudent(selectedStudent.value)
       } catch (err) {
         console.error('Error enrolling student:', err)
@@ -1329,7 +2040,7 @@ export default {
       if (!confirm('Are you sure you want to unenroll this student from this class?')) return
       try {
         await api.put(`/api/enrolments/${enrollmentId}`, { status: 'inactive' })
-        await loadStudents()
+        await Promise.all([refreshStudents(), refreshClasses()])
         if (selectedStudent.value) await viewStudent(selectedStudent.value)
       } catch (err) {
         console.error('Error unenrolling student:', err)
@@ -1342,7 +2053,13 @@ export default {
       try {
         await api.delete(`/api/students/${student.id}`)
         if (selectedStudent.value?.id === student.id) selectedStudent.value = null
-        await loadStudents()
+        await Promise.all([
+          refreshStudents(),
+          refreshClasses(),
+          refreshLessons(),
+          refreshAttendance()
+        ])
+        await loadMonthlyFees()
       } catch (err) {
         console.error('Error deleting student:', err)
         error.value = err.message || 'Error deleting student'
@@ -1350,8 +2067,42 @@ export default {
       }
     }
 
+    // Only clears the selected school when the admin manually changes the
+    // level. Loading an existing student's level/school into the form is a
+    // programmatic assignment and does not trigger this handler.
+    const onLevelChange = () => {
+      formData.value.school = ''
+    }
+
     const saveStudent = async () => {
       error.value = ''
+      const name = (formData.value.name || '').trim()
+      const level = (formData.value.level || '').trim()
+      const school = (formData.value.school || '').trim()
+      const parentName = (formData.value.parent_name || '').trim()
+      const parentContact = (formData.value.parent_contact || '').trim()
+
+      if (!name) {
+        error.value = 'Student Name is required.'
+        return
+      }
+      if (!level) {
+        error.value = 'Please select a level.'
+        return
+      }
+      if (!school) {
+        error.value = 'Please select a level before selecting a school.'
+        return
+      }
+      if (!parentName) {
+        error.value = 'Parent Name is required.'
+        return
+      }
+      if (!parentContact) {
+        error.value = 'Parent Contact is required.'
+        return
+      }
+
       try {
         if (showEditModal.value && editingId.value) {
           await api.put(`/api/students/${editingId.value}`, formData.value)
@@ -1359,7 +2110,7 @@ export default {
           await api.post('/api/students', formData.value)
         }
         closeModal()
-        await loadStudents()
+        await refreshStudents()
       } catch (err) {
         error.value = err.message || 'Error saving student'
       }
@@ -1382,9 +2133,9 @@ export default {
     }
 
     onMounted(async () => {
-      await loadClasses()
-      await loadStudents()
-      loadMonthlyFees()
+      await loadAdminData()
+      await loadMonthlyFees()
+      await loadAllBillAdjustments()
     })
 
     return {
@@ -1403,7 +2154,7 @@ export default {
       sortKey,
       sortDirection,
       sortOptions,
-      sortedStudents,
+      studentLevelSections,
       toggleSort,
       toggleSortDirection,
       getSortIcon,
@@ -1417,18 +2168,33 @@ export default {
       enrollStudent,
       unenrollStudent,
       deleteStudent,
+      onLevelChange,
       saveStudent,
       closeModal,
-      loadStudents,
-      loadClasses,
+      onPendingStudentsUpdated,
       feesLoading,
       showFeeBreakdownModal,
       selectedFeeStudent,
       selectedFeeBreakdown,
       selectedFeeTotal,
+      BILL_ADJUSTMENT_PRESETS,
+      feeModalAppliedItems,
+      feeModalAdjustmentsTotal,
+      feeModalFinalTotal,
+      formatSignedCurrency,
+      openModifyBill,
+      closeModifyBill,
+      toggleModifyBillKey,
+      isModifyBillKeyOn,
+      saveBillAdjustments,
+      savingBillAdjustments,
+      showModifyBillModal,
+      firstChargedLessonFeeForSelected,
+      formatFreeTrialParens,
       currentMonthLabel,
       formatCurrency,
       getStudentFeesThisMonth,
+      getStudentFinalFeesThisMonth,
       openFeeBreakdown,
       closeFeeBreakdown,
       feeStatusBadgeClass,
@@ -1446,8 +2212,21 @@ export default {
       cancelEditFeeRow,
       saveEditFeeRow,
       deleteFeeRow,
+      showBillingHistoryModal,
+      selectedBillingStudent,
+      billingHistoryLoading,
+      billingHistoryError,
+      selectedStudentMonthlyBilling,
+      openStudentBillingHistory,
+      closeBillingHistory,
       attendanceStatusOptions: ATTENDANCE_STATUS_OPTIONS,
-      durationOptions: DURATION_OPTIONS
+      durationOptions: DURATION_OPTIONS,
+      studentStatusOptions: STUDENT_STATUS_OPTIONS,
+      legacyInactiveOption: STUDENT_STATUS_LEGACY_INACTIVE,
+      isStudentActive,
+      getStudentStatusRank,
+      getStudentStatusLabel,
+      getStudentStatusClass
     }
   }
 }
@@ -1585,9 +2364,44 @@ export default {
   }
 }
 
-.students-table-card {
-  padding: 0;
-  overflow: hidden;
+.student-section-card {
+  background: #ffffff;
+  border: 1px solid #e5e7eb;
+  border-radius: 16px;
+  padding: 24px;
+  margin-bottom: 24px;
+  box-shadow: 0 2px 8px rgba(15, 23, 42, 0.04);
+}
+
+.student-section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 16px;
+}
+
+.student-section-title {
+  margin: 0;
+  font-size: 1.25rem;
+  font-weight: 700;
+  color: #1f2937;
+  letter-spacing: -0.02em;
+}
+
+.student-count-badge {
+  flex-shrink: 0;
+  background: #eef2ff;
+  color: #3730a3;
+  padding: 6px 12px;
+  border-radius: 999px;
+  font-size: 0.85rem;
+  font-weight: 700;
+}
+
+.students-table-wrap {
+  margin: 0 -2px;
 }
 
 .students-table-scroll {
@@ -1807,6 +2621,43 @@ export default {
   letter-spacing: 0.02em;
 }
 
+.student-status {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px 10px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  border-radius: 999px;
+  letter-spacing: 0.01em;
+  border: 1px solid transparent;
+  white-space: nowrap;
+}
+.student-status-active {
+  color: #065f46;
+  background: #d1fae5;
+  border-color: #a7f3d0;
+}
+.student-status-dropped {
+  color: #9a3412;
+  background: #ffedd5;
+  border-color: #fed7aa;
+}
+.student-status-graduated {
+  color: #4c1d95;
+  background: #ede9fe;
+  border-color: #ddd6fe;
+}
+.student-status-stopped {
+  color: #334155;
+  background: #e2e8f0;
+  border-color: #cbd5e1;
+}
+.student-status-inactive {
+  color: #475569;
+  background: #f1f5f9;
+  border-color: #e2e8f0;
+}
+
 .fee-breakdown-table th,
 .fee-breakdown-table td {
   vertical-align: middle;
@@ -1856,6 +2707,117 @@ export default {
   border-radius: 8px;
 }
 
+.bill-summary-section {
+  margin-top: 20px;
+  padding-top: 16px;
+  border-top: 1px solid var(--color-border, #e2e8f0);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.bill-summary-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 12px;
+  font-size: 0.9375rem;
+}
+
+.bill-summary-sub {
+  margin: 8px 0 0;
+  font-size: 0.8125rem;
+  font-weight: 600;
+  color: var(--color-text-muted, #64748b);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.bill-summary-adjust {
+  padding-left: 8px;
+  font-size: 0.875rem;
+  color: var(--color-text, #0f172a);
+}
+
+.bill-summary-none {
+  margin: 4px 0 0;
+  font-size: 0.875rem;
+  color: var(--color-text-muted, #94a3b8);
+}
+
+.bill-summary-final {
+  margin-top: 8px;
+  padding-top: 10px;
+  border-top: 1px dashed var(--color-border, #e2e8f0);
+  font-size: 1.0625rem;
+}
+
+.bill-summary-final strong {
+  color: var(--color-primary, #4f46e5);
+}
+
+.modify-bill-modal {
+  max-width: 480px;
+  width: min(96vw, 480px);
+}
+
+.modify-bill-modal h2 {
+  margin: 0 0 4px;
+}
+
+.modify-bill-subtitle {
+  margin: 0 0 8px;
+  font-size: 0.9rem;
+  color: var(--color-text-muted, #64748b);
+}
+
+.modify-bill-hint {
+  margin: 0 0 12px;
+  font-size: 0.8125rem;
+  color: var(--color-text-muted, #94a3b8);
+}
+
+.modify-bill-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.modify-bill-item {
+  border-bottom: 1px solid var(--color-border, #f1f5f9);
+  padding: 10px 0;
+}
+
+.modify-bill-item:last-child {
+  border-bottom: none;
+}
+
+.modify-bill-label {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  font-size: 0.9375rem;
+  font-weight: 500;
+}
+
+.modify-bill-label input {
+  width: 1.1rem;
+  height: 1.1rem;
+  cursor: pointer;
+}
+
+.modify-bill-amount {
+  color: var(--color-text-muted, #64748b);
+  font-size: 0.875rem;
+}
+
+.modify-bill-actions {
+  margin-top: 8px;
+  justify-content: flex-end;
+}
+
 .fee-modal-actions {
   display: flex;
   justify-content: flex-end;
@@ -1888,5 +2850,156 @@ export default {
 .badge-muted {
   background: #e2e8f0;
   color: #334155;
+}
+
+.student-name-link {
+  appearance: none;
+  background: none;
+  border: none;
+  padding: 0;
+  font: inherit;
+  color: #4f46e5;
+  font-weight: 600;
+  cursor: pointer;
+  text-align: left;
+  text-decoration: none;
+  border-bottom: 1px dashed transparent;
+  transition: color 0.15s ease, border-color 0.15s ease;
+}
+.student-name-link:hover {
+  color: #3730a3;
+  border-bottom-color: #a5b4fc;
+}
+.student-name-link:focus-visible {
+  outline: 2px solid #a5b4fc;
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+.billing-history-modal {
+  max-width: 1040px;
+  width: 95%;
+}
+
+.billing-history-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 18px;
+}
+
+.billing-history-header h2 {
+  margin: 0;
+  font-size: 1.25rem;
+  font-weight: 700;
+  color: var(--color-text, #0f172a);
+}
+
+.billing-history-subtitle {
+  margin: 4px 0 0;
+  font-size: 0.9375rem;
+  color: var(--color-text-muted, #64748b);
+}
+
+.billing-history-close {
+  background: transparent;
+  border: none;
+  font-size: 26px;
+  line-height: 1;
+  color: var(--color-text-muted, #64748b);
+  cursor: pointer;
+  padding: 0 6px;
+}
+.billing-history-close:hover {
+  color: var(--color-text, #0f172a);
+}
+
+.billing-history-body {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.billing-month-card {
+  border: 1px solid var(--color-border, #e5e7eb);
+  border-radius: 14px;
+  padding: 16px 18px;
+  background: #ffffff;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+}
+
+.billing-month-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+  flex-wrap: wrap;
+}
+
+.billing-month-header h3 {
+  margin: 0;
+  font-size: 1.0625rem;
+  font-weight: 700;
+  color: var(--color-text, #0f172a);
+}
+
+.billing-month-totals {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 4px;
+  text-align: right;
+  max-width: 100%;
+}
+
+.billing-month-line {
+  font-size: 0.8125rem;
+  color: var(--color-text-muted, #64748b);
+}
+
+.billing-month-adj {
+  font-size: 0.8125rem;
+  color: var(--color-text, #0f172a);
+}
+
+.billing-month-total {
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: #eef2ff;
+  color: #3730a3;
+  font-size: 0.8125rem;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+}
+
+.billing-month-final {
+  margin-top: 2px;
+  background: #ecfdf5;
+  color: #065f46;
+}
+
+.billing-history-table-scroll {
+  overflow-x: auto;
+}
+
+.billing-history-table {
+  width: 100%;
+  min-width: 820px;
+}
+
+.billing-history-table th,
+.billing-history-table td {
+  vertical-align: middle;
+}
+
+.billing-subject-cell {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
 }
 </style>

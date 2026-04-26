@@ -234,10 +234,15 @@
                 <li
                   v-for="option in filteredMakeupStudents"
                   :key="option.id"
-                  class="makeup-result-item"
+                  :class="['makeup-result-item', { 'makeup-result-item-inactive': !isStudentActive(option) }]"
                 >
                   <div class="makeup-result-info">
-                    <div class="makeup-result-name">{{ option.name }}</div>
+                    <div class="makeup-result-name">
+                      <span>{{ option.name }}</span>
+                      <span :class="getStudentStatusClass(option)">
+                        {{ getStudentStatusLabel(option) }}
+                      </span>
+                    </div>
                     <div class="makeup-result-meta">
                       <span v-if="option.level">{{ option.level }}</span>
                       <span v-if="option.school"> · {{ option.school }}</span>
@@ -259,13 +264,57 @@
 
           <div v-if="error" class="error">{{ error }}</div>
           <div v-if="success" class="success">
-            Lesson submitted successfully! Parents have been notified.
+            <template v-if="successIsMissed">Missed lesson saved. Students were not charged.</template>
+            <template v-else>Lesson submitted successfully! Parents have been notified.</template>
           </div>
 
-          <button type="submit" class="btn btn-primary" :disabled="submitting || !isAttendanceValid">
-            {{ submitting ? 'Submitting...' : 'Submit Lesson' }}
-          </button>
+          <div class="lesson-form-actions">
+            <button
+              type="submit"
+              class="btn btn-primary"
+              :disabled="submitting || !isAttendanceValid"
+            >
+              {{ submitting && !savingAsMissed ? 'Submitting...' : 'Submit Lesson' }}
+            </button>
+            <button
+              type="button"
+              class="btn btn-missed"
+              :disabled="submitting"
+              @click="openMissedReasonModal"
+            >
+              Save as Missed Lesson
+            </button>
+          </div>
         </form>
+      </div>
+    </div>
+
+    <div
+      v-if="showMissedReasonModal"
+      class="lesson-date-modal-overlay"
+      @click.self="closeMissedReasonModal"
+    >
+      <div class="lesson-date-modal" role="dialog" aria-modal="true" aria-labelledby="missed-reason-title" @click.stop>
+        <h3 id="missed-reason-title">Missed lesson — reason required</h3>
+        <p class="missed-reason-hint">Describe why this class did not run (e.g. teacher sick, public holiday, cancelled).</p>
+        <label class="missed-reason-label" for="missed-reason-text">Remark / Reason *</label>
+        <textarea
+          id="missed-reason-text"
+          v-model="missedModalRemark"
+          rows="4"
+          class="missed-reason-textarea"
+          placeholder="e.g. Teacher sick, public holiday, class cancelled, student unable to attend"
+          @keydown.esc="closeMissedReasonModal"
+        ></textarea>
+        <p v-if="missedModalError" class="error" style="margin-top:8px;">{{ missedModalError }}</p>
+        <div class="lesson-date-modal-actions">
+          <button type="button" class="btn btn-secondary" :disabled="savingAsMissed" @click="closeMissedReasonModal">
+            Cancel
+          </button>
+          <button type="button" class="btn btn-missed" :disabled="savingAsMissed" @click="confirmSaveMissedLesson">
+            {{ savingAsMissed ? 'Saving...' : 'Save Missed Lesson' }}
+          </button>
+        </div>
       </div>
     </div>
   </div>
@@ -284,6 +333,12 @@ import {
   getClassDefaultDuration,
   formatDurationLabel
 } from '../constants/billing'
+import {
+  isStudentActive,
+  getStudentStatusRank,
+  getStudentStatusLabel,
+  getStudentStatusClass
+} from '../constants/studentStatus'
 
 const LESSON_DATE_UNLOCK_PASSWORD = '123'
 
@@ -298,6 +353,8 @@ export default {
     const students = ref([])
     const error = ref('')
     const success = ref(false)
+    const successIsMissed = ref(false)
+    const savingAsMissed = ref(false)
     const formData = ref({
       lessonDate: new Date().toISOString().split('T')[0],
       teacherId: '',
@@ -306,6 +363,32 @@ export default {
       materialsLink: '',
       attendance: {}
     })
+
+    const showMissedReasonModal = ref(false)
+    const missedModalRemark = ref('')
+    const missedModalError = ref('')
+
+    const openMissedReasonModal = () => {
+      if (!formData.value.teacherId) {
+        error.value = 'Please select a teacher'
+        return
+      }
+      if (lessonDateDayError.value) {
+        error.value = lessonDateDayError.value
+        return
+      }
+      error.value = ''
+      missedModalRemark.value = ''
+      missedModalError.value = ''
+      showMissedReasonModal.value = true
+    }
+
+    const closeMissedReasonModal = () => {
+      if (savingAsMissed.value) return
+      showMissedReasonModal.value = false
+      missedModalRemark.value = ''
+      missedModalError.value = ''
+    }
 
     const lessonDateUnlocked = ref(false)
     const showLessonDatePasswordModal = ref(false)
@@ -432,8 +515,10 @@ export default {
       )
     })
 
-    const loadMakeupCatalogIfNeeded = async () => {
-      if (makeupCatalog.value.length > 0) return
+    // Always refetch the catalog when the picker opens so newly-added or
+    // newly-edited students (including inactive ones) show up immediately
+    // without requiring a page reload.
+    const loadMakeupCatalog = async () => {
       makeupLoading.value = true
       try {
         const list = await api.getPublic('/api/public/students-minimal')
@@ -449,7 +534,7 @@ export default {
     const openMakeupModal = async () => {
       makeupSearch.value = ''
       showMakeupModal.value = true
-      await loadMakeupCatalogIfNeeded()
+      await loadMakeupCatalog()
     }
 
     const closeMakeupModal = () => {
@@ -461,16 +546,33 @@ export default {
       return attendanceRows.value.some(r => r.id === studentId)
     }
 
+    // Sorts makeup candidates so active students appear first and inactive
+    // ones (dropped / graduated / stopped / legacy inactive) fall to the
+    // bottom. Within each group, sort alphabetically by name.
+    const sortMakeupCandidates = (list) =>
+      [...list].sort((a, b) => {
+        const rankDiff = getStudentStatusRank(a) - getStudentStatusRank(b)
+        if (rankDiff !== 0) return rankDiff
+        return (a.name || '').localeCompare(b.name || '', undefined, {
+          sensitivity: 'base'
+        })
+      })
+
     const filteredMakeupStudents = computed(() => {
       const term = makeupSearch.value.trim().toLowerCase()
       const list = makeupCatalog.value || []
-      if (!term) return list.slice(0, 50)
-      return list
-        .filter(s => {
-          const hay = `${s.name} ${s.school} ${s.level} ${s.parent_contact}`.toLowerCase()
-          return hay.includes(term)
-        })
-        .slice(0, 50)
+      // Inactive students are NEVER excluded by status. Already-added students
+      // remain visible in the list but the Add button is disabled for them.
+      const filtered = term
+        ? list.filter(s => {
+            const hay = [s.name, s.school, s.level, s.parent_contact, s.parent_name]
+              .filter(Boolean)
+              .join(' ')
+              .toLowerCase()
+            return hay.includes(term)
+          })
+        : list
+      return sortMakeupCandidates(filtered).slice(0, 50)
     })
 
     const addMakeupStudent = (student) => {
@@ -501,8 +603,13 @@ export default {
         if (data) {
           classData.value = data
           formData.value.teacherId = data.main_teacher_id || ''
-          const scheduleDate = getScheduleDayDate(data.day_of_week)
-          if (scheduleDate) formData.value.lessonDate = scheduleDate
+          const qd = route.query?.date
+          if (qd && typeof qd === 'string' && /^\d{4}-\d{2}-\d{2}/.test(qd)) {
+            formData.value.lessonDate = qd.slice(0, 10)
+          } else {
+            const scheduleDate = getScheduleDayDate(data.day_of_week)
+            if (scheduleDate) formData.value.lessonDate = scheduleDate
+          }
           const teacherList = await api.getPublic('/api/public/teachers')
           teachers.value = teacherList || []
           const stu = data.students || []
@@ -527,6 +634,50 @@ export default {
       }
     }
 
+    const confirmSaveMissedLesson = async () => {
+      const t = (missedModalRemark.value || '').trim()
+      if (!t) {
+        missedModalError.value = 'Please enter a reason for the missed lesson.'
+        return
+      }
+      if (!formData.value.teacherId) {
+        missedModalError.value = 'Please select a teacher on the form first.'
+        return
+      }
+      if (lessonDateDayError.value) {
+        missedModalError.value = lessonDateDayError.value
+        return
+      }
+      if (!classData.value) return
+      missedModalError.value = ''
+      error.value = ''
+      success.value = false
+      successIsMissed.value = false
+      submitting.value = true
+      savingAsMissed.value = true
+      try {
+        await api.postPublic('/api/public/lesson-missed', {
+          classId: route.params.classId,
+          lessonDate: formData.value.lessonDate,
+          teacherId: formData.value.teacherId,
+          startTime: classData.value.start_time || classData.value.startTime || '',
+          endTime: classData.value.end_time || classData.value.endTime || '',
+          remark: t
+        })
+        success.value = true
+        successIsMissed.value = true
+        showMissedReasonModal.value = false
+        missedModalRemark.value = ''
+        setTimeout(() => { success.value = false }, 5000)
+      } catch (err) {
+        console.error('Error saving missed lesson:', err)
+        missedModalError.value = err.message || 'Error saving missed lesson. Please try again.'
+      } finally {
+        submitting.value = false
+        savingAsMissed.value = false
+      }
+    }
+
     const submitLesson = async () => {
       if (!isAttendanceValid.value) {
         error.value = 'Please mark attendance for all students'
@@ -542,7 +693,9 @@ export default {
       }
       error.value = ''
       success.value = false
+      successIsMissed.value = false
       submitting.value = true
+      savingAsMissed.value = false
       try {
         const attendancePayload = {}
         for (const row of attendanceRows.value) {
@@ -619,6 +772,14 @@ export default {
       lessonDateDayError,
       isAttendanceValid,
       submitLesson,
+      showMissedReasonModal,
+      missedModalRemark,
+      missedModalError,
+      openMissedReasonModal,
+      closeMissedReasonModal,
+      confirmSaveMissedLesson,
+      successIsMissed,
+      savingAsMissed,
       attendanceStatusOptions: ATTENDANCE_STATUS_OPTIONS,
       durationOptions: DURATION_OPTIONS,
       formatDurationLabel,
@@ -640,7 +801,10 @@ export default {
       openLessonDatePasswordModal,
       closeLessonDatePasswordModal,
       submitLessonDatePassword,
-      relockLessonDate
+      relockLessonDate,
+      isStudentActive,
+      getStudentStatusLabel,
+      getStudentStatusClass
     }
   }
 }
@@ -683,6 +847,50 @@ h1 {
 .btn-sm {
   padding: 6px 12px;
   font-size: 0.8125rem;
+}
+
+.lesson-form-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 4px;
+}
+
+.missed-reason-hint {
+  font-size: 0.875rem;
+  color: #64748b;
+  margin: 0 0 12px;
+  line-height: 1.4;
+}
+.missed-reason-label {
+  display: block;
+  font-size: 0.8125rem;
+  font-weight: 600;
+  color: #334155;
+  margin-bottom: 6px;
+}
+.missed-reason-textarea {
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid #cbd5e1;
+  border-radius: 8px;
+  font-size: 0.9375rem;
+  font-family: inherit;
+  resize: vertical;
+  min-height: 100px;
+  box-sizing: border-box;
+}
+
+.btn-missed {
+  background: #fff7ed;
+  border: 1px solid #ea580c;
+  color: #9a3412;
+  font-weight: 600;
+}
+
+.btn-missed:hover:not(:disabled) {
+  background: #ffedd5;
+  color: #7c2d12;
 }
 
 .lesson-date-modal-overlay {
@@ -878,9 +1086,54 @@ h1 {
   border-bottom: none;
 }
 
+.makeup-result-item-inactive {
+  background: #fafafa;
+}
+
 .makeup-result-name {
   font-weight: 600;
   color: #0f172a;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.student-status {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  font-size: 0.7rem;
+  font-weight: 600;
+  border-radius: 999px;
+  letter-spacing: 0.01em;
+  border: 1px solid transparent;
+  white-space: nowrap;
+}
+.student-status-active {
+  color: #065f46;
+  background: #d1fae5;
+  border-color: #a7f3d0;
+}
+.student-status-dropped {
+  color: #9a3412;
+  background: #ffedd5;
+  border-color: #fed7aa;
+}
+.student-status-graduated {
+  color: #4c1d95;
+  background: #ede9fe;
+  border-color: #ddd6fe;
+}
+.student-status-stopped {
+  color: #334155;
+  background: #e2e8f0;
+  border-color: #cbd5e1;
+}
+.student-status-inactive {
+  color: #475569;
+  background: #f1f5f9;
+  border-color: #e2e8f0;
 }
 
 .makeup-result-meta {

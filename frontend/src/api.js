@@ -9,6 +9,12 @@ function normalizeBase(raw) {
   if (!s) return ''
   // Strip trailing slashes so BASE + "/api/foo" is always exactly one slash.
   s = s.replace(/\/+$/, '')
+  // Many deployments use paths like /api/...; base must be the origin only.
+  // If the env is set to "https://backend.vercel.app/api", requests become
+  // "https://backend.vercel.app/api/api/..." and every route 404s.
+  if (/\/api$/i.test(s)) {
+    s = s.replace(/\/api$/i, '')
+  }
   // Be forgiving if someone forgets the scheme (e.g. "myapi.vercel.app").
   if (!/^https?:\/\//i.test(s)) {
     console.warn(
@@ -110,9 +116,45 @@ async function request(method, path, body = undefined, { requireAuth } = {}) {
     err.status = 401
     throw err
   }
-  const data = await res.json().catch(() => ({}))
+  const text = await res.text()
+  let data = {}
+  if (text) {
+    try {
+      data = JSON.parse(text)
+    } catch {
+      data = { _notJson: true, _raw: text }
+    }
+  }
   if (!res.ok) {
-    const err = new Error(data.error || res.statusText || 'Request failed')
+    const fromBody = typeof data.error === 'string' ? data.error : typeof data.message === 'string' ? data.message : null
+    const rawSnippet =
+      data._notJson && data._raw
+        ? data._raw.replace(/<script[\s\S]*?<\/script>/gi, ' ').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 200)
+        : null
+    let msg =
+      fromBody ||
+      rawSnippet ||
+      (res.status ? `HTTP ${res.status}` : null) ||
+      (res.statusText && res.statusText.trim() ? res.statusText.trim() : null) ||
+      'Request failed'
+    if (res.status === 404) {
+      msg += ' — If this is production, confirm the backend is deployed and VITE_API_BASE_URL is the API origin only (no trailing /api; paths add /api/... automatically).'
+    }
+    if (typeof msg === 'string' && (msg.includes('Cannot POST') || (rawSnippet && rawSnippet.includes('Cannot POST')))) {
+      // Express 404: no matching route (old backend build or wrong host).
+      msg = [
+        'Cannot POST: this server does not have /api/public/lesson-missed yet.',
+        'Redeploy the Vercel backend (Root: backend) from the latest main branch.',
+        'In the frontend project set VITE_API_BASE_URL to that backend URL (https only, no /api at end) and redeploy the frontend.',
+        'Check GET /api/health on the backend — you should see publicLessonMissed: true.'
+      ].join(' ')
+    }
+    const err = new Error(msg)
+    err.status = res.status
+    throw err
+  }
+  if (data._notJson) {
+    const err = new Error('Invalid JSON from server (success response)')
     err.status = res.status
     throw err
   }

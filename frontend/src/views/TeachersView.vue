@@ -194,9 +194,10 @@
 </template>
 
 <script>
-import { ref, onMounted } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { api } from '../api'
 import Navbar from '../components/Navbar.vue'
+import { useAdminData } from '../composables/useAdminData'
 
 export default {
   name: 'TeachersView',
@@ -204,8 +205,14 @@ export default {
     Navbar
   },
   setup() {
-    const loading = ref(true)
-    const teachers = ref([])
+    const {
+      teachers,
+      loadAdminData,
+      refreshTeachers,
+      isLoaded,
+      isLoading
+    } = useAdminData()
+    const loading = computed(() => isLoading.value && !isLoaded.value)
     const showCreateModal = ref(false)
     const showEditModal = ref(false)
     const selectedTeacher = ref(null)
@@ -239,18 +246,6 @@ export default {
         month: 'short',
         day: 'numeric'
       })
-    }
-
-    const loadTeachers = async () => {
-      try {
-        const list = await api.get('/api/teachers')
-        teachers.value = (list || []).sort((a, b) => (a.name || '').localeCompare(b.name || ''))
-      } catch (err) {
-        console.error('Error loading teachers:', err)
-        teachers.value = []
-      } finally {
-        loading.value = false
-      }
     }
 
     const addSubject = () => {
@@ -297,7 +292,7 @@ export default {
       try {
         await api.delete(`/api/teachers/${teacher.id}`)
         if (selectedTeacher.value?.id === teacher.id) selectedTeacher.value = null
-        await loadTeachers()
+        await refreshTeachers()
       } catch (err) {
         console.error('Error deleting teacher:', err)
         error.value = err.message || 'Error deleting teacher'
@@ -323,7 +318,7 @@ export default {
           await api.post('/api/teachers', teacherData)
         }
         closeModal()
-        await loadTeachers()
+        await refreshTeachers()
       } catch (err) {
         const msg = err.message || 'Error saving teacher'
         error.value = msg
@@ -349,7 +344,7 @@ export default {
     }
 
     onMounted(() => {
-      loadTeachers()
+      loadAdminData()
     })
 
     return {

@@ -6,7 +6,9 @@ export const ATTENDANCE_STATUSES = {
   PRESENT: 'Present',
   LATE: 'Late',
   ABSENT_VALID: 'Absent (Valid)',
-  ABSENT_CHARGED: 'Absent (Charged by Policy)'
+  ABSENT_CHARGED: 'Absent (Charged by Policy)',
+  /** Class did not run / was cancelled; $0 (set on missed lesson records) */
+  MISSED: 'Missed'
 }
 
 export const ATTENDANCE_STATUS_OPTIONS = [
@@ -39,10 +41,12 @@ export function normalizeAttendanceStatus(status) {
   ) {
     return ATTENDANCE_STATUSES.ABSENT_CHARGED
   }
+  if (lower === 'missed') return ATTENDANCE_STATUSES.MISSED
   return raw
 }
 
 export function isChargeableAttendance(status) {
+  if (normalizeAttendanceStatus(status) === ATTENDANCE_STATUSES.MISSED) return false
   return CHARGEABLE_ATTENDANCE_STATUSES.includes(normalizeAttendanceStatus(status))
 }
 

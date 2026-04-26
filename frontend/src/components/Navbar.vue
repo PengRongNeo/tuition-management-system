@@ -20,13 +20,16 @@ import { useRouter } from 'vue-router'
 import { signOut } from 'firebase/auth'
 import { api } from '../api'
 import { auth } from '../firebase'
+import { useAdminData } from '../composables/useAdminData'
 
 export default {
   name: 'Navbar',
   setup() {
     const router = useRouter()
+    const { clearAdminData } = useAdminData()
 
     const logout = async () => {
+      clearAdminData()
       api.clearToken()
       try {
         await signOut(auth)

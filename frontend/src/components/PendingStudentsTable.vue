@@ -13,10 +13,10 @@
       <button
         type="button"
         class="btn btn-secondary btn-sm refresh-btn"
-        :disabled="loading"
+        :disabled="loading || refreshBusy"
         @click="loadPendingStudents"
       >
-        {{ loading ? 'Refreshing…' : 'Refresh' }}
+        {{ refreshBusy || loading ? 'Refreshing…' : 'Refresh' }}
       </button>
     </header>
 
@@ -308,12 +308,9 @@
 </template>
 
 <script>
-import { ref, onMounted } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import {
   collection,
-  query,
-  where,
-  getDocs,
   addDoc,
   updateDoc,
   doc,
@@ -322,14 +319,22 @@ import {
 import { auth, db } from '../firebase'
 import SearchableSchoolSelect from './SearchableSchoolSelect.vue'
 import { STUDENT_LEVELS } from '../constants/studentOptions'
+import { useAdminData } from '../composables/useAdminData'
 
 export default {
   name: 'PendingStudentsTable',
   components: { SearchableSchoolSelect },
   emits: ['approved', 'removed', 'updated'],
   setup(_, { emit }) {
-    const pendingStudents = ref([])
-    const loading = ref(false)
+    const {
+      pendingStudents,
+      loadAdminData,
+      refreshPendingStudents,
+      isLoaded,
+      isLoading
+    } = useAdminData()
+    const loading = computed(() => isLoading.value && !isLoaded.value)
+    const refreshBusy = ref(false)
     const loadError = ref('')
     const rowErrors = ref({})
     const busyId = ref(null)
@@ -412,34 +417,17 @@ export default {
     }
 
     async function loadPendingStudents() {
-      loading.value = true
       loadError.value = ''
+      refreshBusy.value = true
       try {
         if (typeof auth.authStateReady === 'function') {
           await auth.authStateReady()
         }
         if (!auth.currentUser) {
           loadError.value = 'Session expired. Please log in again.'
-          loading.value = false
           return
         }
-        const q = query(
-          collection(db, 'pendingStudents'),
-          where('status', '==', 'pending')
-        )
-        const snapshot = await getDocs(q)
-        const docs = snapshot.docs.map((d) => ({ id: d.id, ...d.data() }))
-        docs.sort((a, b) => {
-          const da = toDate(a.submittedAt)?.getTime() ?? 0
-          const db2 = toDate(b.submittedAt)?.getTime() ?? 0
-          return db2 - da
-        })
-        pendingStudents.value = docs.map((p) => ({
-          ...p,
-          officialSchool: p.officialSchool || ''
-        }))
-        // eslint-disable-next-line no-console
-        console.log('Loaded pending students:', pendingStudents.value)
+        await refreshPendingStudents()
       } catch (err) {
         console.error('Error loading pending students:', err)
         loadError.value =
@@ -447,7 +435,7 @@ export default {
             ? 'Unable to read pendingStudents. Check Firestore security rules allow reads of this collection.'
             : err?.message || 'Failed to load pending students.'
       } finally {
-        loading.value = false
+        refreshBusy.value = false
       }
     }
 
@@ -632,11 +620,14 @@ export default {
       }
     }
 
-    onMounted(loadPendingStudents)
+    onMounted(() => {
+      void loadAdminData()
+    })
 
     return {
       pendingStudents,
       loading,
+      refreshBusy,
       loadError,
       rowErrors,
       busyId,

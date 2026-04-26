@@ -106,7 +106,14 @@ app.use(express.json())
 
 // Simple health endpoint handy for Vercel / uptime checks.
 app.get('/', (_req, res) => res.json({ ok: true, service: 'tuition-management-backend' }))
-app.get('/api/health', (_req, res) => res.json({ ok: true }))
+app.get('/api/health', (_req, res) =>
+  res.json({
+    ok: true,
+    // Bump when adding public / admin routes; helps verify a stale Vercel deploy
+    // (e.g. 404 "Cannot POST /api/public/lesson-missed" means old build).
+    build: { publicLessonMissed: true }
+  })
+)
 
 // Auth middleware: verify Firebase ID token
 async function requireAuth(req, res, next) {
@@ -397,23 +404,144 @@ app.post('/api/public/lesson-submit', async (req, res) => {
   }
 })
 
+async function buildMissedLessonAndAttendance (body) {
+  const classId = (body.classId || body.class_id || '').toString().trim()
+  const lessonDate = (body.lessonDate || body.lesson_date || '')
+    .toString()
+    .slice(0, 10)
+  const remark = (body.remark || body.remarks || '').toString().trim()
+  if (!classId || !lessonDate || lessonDate.length < 10) {
+    return { error: 'classId and lessonDate (YYYY-MM-DD) are required' }
+  }
+  if (!remark) {
+    return { error: 'Please enter a reason for the missed lesson.' }
+  }
+  const classDoc = await db.collection('classes').doc(classId).get()
+  if (!classDoc.exists) return { error: 'Class not found' }
+  const cd = classDoc.data()
+  const className = cd.name || ''
+  const classDefaultDuration = Number(cd.default_duration_hours) > 0
+    ? Number(cd.default_duration_hours)
+    : 2
+  const st = (body.startTime ?? body.start_time ?? cd.start_time ?? '').toString()
+  const en = (body.endTime ?? body.end_time ?? cd.end_time ?? '').toString()
+  const teacherId = (
+    body.teacherId ??
+    body.teacher_id ??
+    cd.main_teacher_id ??
+    ''
+  ).toString()
+
+  const enrSnap = await db
+    .collection('enrolments')
+    .where('class_id', '==', classId)
+    .get()
+  const studentIds = enrSnap.docs
+    .map((d) => d.data().student_id)
+    .filter(Boolean)
+
+  const lessonRef = await db.collection('lessons').add({
+    class_id: classId,
+    classId,
+    class_name: className,
+    className,
+    teacher_id: teacherId,
+    teacherId,
+    lesson_date: lessonDate,
+    lessonDate,
+    start_time: st,
+    startTime: st,
+    end_time: en,
+    endTime: en,
+    lesson_type: 'missed',
+    lessonType: 'missed',
+    status: 'missed',
+    remark,
+    remarks: remark,
+    description: '',
+    homework: '',
+    materials_link: '',
+    materialsLink: '',
+    duration_hours: classDefaultDuration,
+    durationHours: classDefaultDuration,
+    created_at: admin.firestore.FieldValue.serverTimestamp(),
+    createdAt: admin.firestore.FieldValue.serverTimestamp()
+  })
+
+  if (studentIds.length === 0) {
+    return { id: lessonRef.id }
+  }
+  const batch = db.batch()
+  for (const studentId of studentIds) {
+    const ref = db.collection('attendance').doc()
+    batch.set(ref, {
+      lesson_id: lessonRef.id,
+      lessonId: lessonRef.id,
+      class_id: classId,
+      classId,
+      student_id: studentId,
+      studentId,
+      status: 'Missed',
+      remark: '',
+      duration_hours: classDefaultDuration,
+      durationHours: classDefaultDuration,
+      fee_charged: 0,
+      feeCharged: 0,
+      is_makeup: false,
+      isMakeup: false,
+      created_at: admin.firestore.FieldValue.serverTimestamp(),
+      createdAt: admin.firestore.FieldValue.serverTimestamp()
+    })
+  }
+  await batch.commit()
+  return { id: lessonRef.id }
+}
+
+// Public: mark lesson as missed (no auth) — same trust model as lesson-submit
+app.post('/api/public/lesson-missed', async (req, res) => {
+  try {
+    const out = await buildMissedLessonAndAttendance(req.body || {})
+    if (out.error) return res.status(400).json({ error: out.error })
+    res.json({ id: out.id })
+  } catch (e) {
+    console.error('[POST /api/public/lesson-missed] failed:', e)
+    res.status(500).json({ error: e?.message || String(e) || 'Failed to save missed lesson' })
+  }
+})
+
+// Admin: mark lesson as missed (auth)
+app.post('/api/lessons/missed', requireAuth, async (req, res) => {
+  try {
+    const out = await buildMissedLessonAndAttendance(req.body || {})
+    if (out.error) return res.status(400).json({ error: out.error })
+    res.json({ id: out.id })
+  } catch (e) {
+    console.error('[POST /api/lessons/missed] failed:', e)
+    res.status(500).json({ error: e?.message || String(e) || 'Failed to save missed lesson' })
+  }
+})
+
 // --- Public: minimal students list for makeup student search (no auth) ---
 app.get('/api/public/students-minimal', async (req, res) => {
   try {
     const snap = await db.collection('students').get()
-    const list = snap.docs
-      .map(d => {
-        const data = d.data()
-        if (data.status && data.status !== 'active') return null
-        return {
-          id: d.id,
-          name: data.name || '',
-          school: data.school || '',
-          level: data.level || '',
-          parent_contact: data.parent_contact || ''
-        }
-      })
-      .filter(Boolean)
+    // Include ALL students (active and inactive) so dropped / graduated /
+    // stopped students remain selectable as makeup students for a lesson.
+    // The `status` and legacy `active` fields are surfaced so the UI can
+    // render a status badge and sort active students first.
+    const list = snap.docs.map(d => {
+      const data = d.data()
+      return {
+        id: d.id,
+        name: data.name || '',
+        school: data.school || '',
+        level: data.level || '',
+        parent_name: data.parent_name || '',
+        parent_contact: data.parent_contact || '',
+        status: data.status || '',
+        active: typeof data.active === 'boolean' ? data.active : undefined
+      }
+    })
     list.sort((a, b) => (a.name || '').localeCompare(b.name || ''))
     res.json(list)
   } catch (e) {
@@ -460,7 +588,18 @@ app.get('/api/classes/:id', requireAuth, async (req, res) => {
     for (const e of enrSnap.docs) {
       const ed = e.data()
       const s = await db.collection('students').doc(ed.student_id).get()
-      students.push({ id: e.id, student_id: ed.student_id, studentName: s.exists ? s.data().name : 'Unknown', join_date: ed.join_date, status: ed.status })
+      const sd = s.exists ? s.data() : {}
+      students.push({
+        id: e.id,
+        student_id: ed.student_id,
+        studentName: s.exists ? sd.name : 'Unknown',
+        level: sd.level || '',
+        school: sd.school || '',
+        parent_contact: sd.parent_contact || '',
+        student_status: sd.status,
+        join_date: ed.join_date,
+        status: ed.status
+      })
     }
     res.json({ id: doc.id, ...data, teacherName, students })
   } catch (e) {
@@ -775,6 +914,24 @@ app.post('/api/enrolments', requireAuth, async (req, res) => {
   try {
     const { student_id, class_id } = req.body || {}
     if (!student_id || !class_id) return res.status(400).json({ error: 'student_id and class_id required' })
+    const dup = await db
+      .collection('enrolments')
+      .where('student_id', '==', student_id)
+      .where('class_id', '==', class_id)
+      .limit(1)
+      .get()
+    if (!dup.empty) {
+      const d = dup.docs[0]
+      const prev = d.data() || {}
+      if (prev.status === 'active') {
+        return res.json({ id: d.id, alreadyEnrolled: true })
+      }
+      await d.ref.update({
+        status: 'active',
+        join_date: admin.firestore.FieldValue.serverTimestamp()
+      })
+      return res.json({ id: d.id, reactivated: true })
+    }
     const ref = await db.collection('enrolments').add({
       student_id,
       class_id,
@@ -963,6 +1120,19 @@ app.put('/api/lessons/:id', requireAuth, async (req, res) => {
     if (body.teacher_id !== undefined || body.teacherId !== undefined) {
       assignBoth('teacher_id', 'teacherId', body.teacher_id ?? body.teacherId ?? '')
     }
+    if (body.remark !== undefined || body.remarks !== undefined) {
+      const r = String(body.remark ?? body.remarks ?? '')
+      update.remark = r
+      update.remarks = r
+    }
+    if (body.lesson_type !== undefined || body.lessonType !== undefined) {
+      const lt = (body.lesson_type ?? body.lessonType ?? '').toString()
+      update.lesson_type = lt
+      update.lessonType = lt
+    }
+    if (body.status !== undefined) {
+      update.status = (body.status ?? '').toString()
+    }
     if (body.description !== undefined) update.description = body.description ?? ''
     if (body.homework !== undefined) update.homework = body.homework ?? ''
     if (body.materials_link !== undefined || body.materialsLink !== undefined) {
@@ -1141,6 +1311,7 @@ const ATTENDANCE_PRESENT = 'Present'
 const ATTENDANCE_LATE = 'Late'
 const ATTENDANCE_ABSENT_VALID = 'Absent (Valid)'
 const ATTENDANCE_ABSENT_CHARGED = 'Absent (Charged by Policy)'
+const ATTENDANCE_MISSED = 'Missed'
 
 function normalizeAttendanceStatus(status) {
   if (status == null) return ''
@@ -1159,11 +1330,13 @@ function normalizeAttendanceStatus(status) {
   ) {
     return ATTENDANCE_ABSENT_CHARGED
   }
+  if (lower === 'missed') return ATTENDANCE_MISSED
   return raw
 }
 
 function isChargeableAttendanceStatus(status) {
   const n = normalizeAttendanceStatus(status)
+  if (n === ATTENDANCE_MISSED) return false
   return n === ATTENDANCE_PRESENT || n === ATTENDANCE_LATE || n === ATTENDANCE_ABSENT_CHARGED
 }
 
@@ -1217,11 +1390,15 @@ app.get('/api/dashboard', requireAuth, async (req, res) => {
           defaultDuration = classDefaultDurationMap[classId] ?? 2
         }
       }
+      const lt = String(data.lesson_type ?? data.lessonType ?? '').toLowerCase()
+      const st = String(data.status ?? '').toLowerCase()
+      const isMissed = lt === 'missed' || st === 'missed'
       lessonMap[d.id] = {
         date: parseLessonDate(data.lesson_date ?? data.lessonDate) || parseLessonDate(data.created_at ?? data.createdAt),
         classId,
         ratePerHour,
-        defaultDuration
+        defaultDuration,
+        isMissed
       }
     })
 
@@ -1236,6 +1413,7 @@ app.get('/api/dashboard', requireAuth, async (req, res) => {
       if (!isChargeableAttendanceStatus(data.status)) return
       const lesson = lessonMap[data.lesson_id ?? data.lessonId]
       if (!lesson) return
+      if (lesson.isMissed) return
       if (lesson.date && lesson.date > endOfToday) return
       const durationRaw = data.duration_hours ?? data.durationHours
       const duration = Number.isFinite(Number(durationRaw)) && Number(durationRaw) > 0
@@ -1270,6 +1448,34 @@ app.get('/api/dashboard', requireAuth, async (req, res) => {
           weekStartDate: monday.toISOString(),
           weekLabel: monday.toLocaleDateString('en-SG', {
             day: 'numeric',
+            month: 'short',
+            year: 'numeric'
+          }),
+          revenue
+        }
+      })
+
+    // Revenue grouped by month (YYYY-MM). Always include the current month even
+    // if there has been no chargeable revenue yet so the chart has a trailing
+    // point for the ongoing period.
+    const monthBuckets = new Map()
+    for (const entry of chargeableEntries) {
+      if (!entry.date) continue
+      const mkey = `${entry.date.getFullYear()}-${String(entry.date.getMonth() + 1).padStart(2, '0')}`
+      monthBuckets.set(mkey, (monthBuckets.get(mkey) || 0) + entry.amount)
+    }
+    const currentMonthKey = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`
+    if (!monthBuckets.has(currentMonthKey)) {
+      monthBuckets.set(currentMonthKey, 0)
+    }
+    const monthEntries = Array.from(monthBuckets.entries())
+      .sort((a, b) => a[0].localeCompare(b[0]))
+      .map(([key, revenue]) => {
+        const [y, m] = key.split('-').map(Number)
+        const firstOfMonth = new Date(y, m - 1, 1)
+        return {
+          monthKey: key,
+          monthLabel: firstOfMonth.toLocaleDateString('en-SG', {
             month: 'short',
             year: 'numeric'
           }),
@@ -1330,12 +1536,19 @@ app.get('/api/dashboard', requireAuth, async (req, res) => {
       // Alias kept for any older clients still reading the previous field name.
       monthlyRevenue: revenueThusFar,
       revenueByWeek: weekEntries,
+      revenueByMonth: monthEntries,
       weeklyClassesCount,
       recentLessons
     })
   } catch (e) {
     res.status(500).json({ error: e.message })
   }
+})
+
+// Return JSON (not HTML) for unknown paths so the SPA client can show a useful error
+// and parse `error` (avoids a useless "Request failed" when the response body is HTML).
+app.use((req, res) => {
+  res.status(404).json({ error: `Not found: ${req.method} ${req.originalUrl || req.url || ''}` })
 })
 
 // Export the Express app so serverless platforms (e.g. Vercel) can invoke it

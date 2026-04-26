@@ -7,7 +7,7 @@
           <h1>Classes</h1>
           <p>Manage class schedules and fees</p>
         </div>
-        <button @click="showCreateModal = true" class="btn btn-primary">
+        <button type="button" @click="openCreateModal" class="btn btn-primary">
           + Create New Class
         </button>
       </header>
@@ -16,54 +16,72 @@
       <div v-else-if="classes.length === 0" class="card">
         <p>No classes found. Create your first class to get started.</p>
       </div>
-      <div v-else class="card">
-        <table class="table">
-          <thead>
-            <tr>
-              <th>Name</th>
-              <th>Subject</th>
-              <th>Level</th>
-              <th>Schedule</th>
-              <th>Teacher</th>
-              <th>Rate / Hour</th>
-              <th>Students</th>
-              <th>Status</th>
-              <th>Actions</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr v-for="classItem in sortedClasses" :key="classItem.id">
-              <td>{{ classItem.name }}</td>
-              <td>{{ classItem.subject }}</td>
-              <td>{{ classItem.level }}</td>
-              <td>{{ formatSchedule(classItem) }}</td>
-              <td>{{ classItem.teacherName || 'Not assigned' }}</td>
-              <td>${{ getRatePerHour(classItem) }} / hour &middot; {{ getDefaultDuration(classItem) }}h</td>
-              <td>{{ classItem.studentCount || 0 }}</td>
-              <td>
-                <span :class="classItem.active ? 'badge badge-success' : 'badge badge-danger'">
-                  {{ classItem.active ? 'Active' : 'Inactive' }}
-                </span>
-              </td>
-              <td>
-                <router-link :to="`/class/${classItem.id}`" class="btn btn-primary btn-sm">
-                  View
-                </router-link>
-                <button @click="editClass(classItem)" class="btn btn-secondary btn-sm">
-                  Edit
-                </button>
-                <button @click="deleteClass(classItem)" class="btn btn-danger btn-sm">
-                  Delete
-                </button>
-              </td>
-            </tr>
-          </tbody>
-        </table>
+      <div v-else class="teacher-groups">
+        <div
+          v-for="group in groupedClassesByTeacher"
+          :key="group.teacherName"
+          class="card teacher-class-card"
+        >
+          <h2 class="teacher-class-title">
+            {{ group.teacherName === 'Without Assigned Teacher'
+              ? 'Classes Without Assigned Teacher'
+              : `Classes of Teacher ${group.teacherName}` }}
+            <span class="teacher-class-count">{{ group.classes.length }}</span>
+          </h2>
+          <div class="table-wrapper">
+            <table class="table">
+              <thead>
+                <tr>
+                  <th>Name</th>
+                  <th>Subject</th>
+                  <th>Level</th>
+                  <th>Schedule</th>
+                  <th>Rate / Hour</th>
+                  <th>Students</th>
+                  <th>Revenue / Lesson</th>
+                  <th>Status</th>
+                  <th>Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="classItem in group.classes" :key="classItem.id">
+                  <td>
+                    <router-link :to="`/class/${classItem.id}`" class="class-name-link">
+                      {{ classItem.name }}
+                    </router-link>
+                  </td>
+                  <td>{{ classItem.subject }}</td>
+                  <td>{{ classItem.level }}</td>
+                  <td>{{ formatSchedule(classItem) }}</td>
+                  <td class="num">{{ formatCurrency(getRatePerHour(classItem)) }}<span class="table-unit">/h</span></td>
+                  <td>{{ classItem.studentCount || 0 }}</td>
+                  <td class="num">{{ formatCurrency(getClassRevenuePerLesson(classItem)) }}</td>
+                  <td>
+                    <span :class="classItem.active ? 'badge badge-success' : 'badge badge-danger'">
+                      {{ classItem.active ? 'Active' : 'Inactive' }}
+                    </span>
+                  </td>
+                  <td>
+                    <router-link :to="`/class/${classItem.id}`" class="btn btn-primary btn-sm">
+                      View
+                    </router-link>
+                    <button @click="editClass(classItem)" class="btn btn-secondary btn-sm">
+                      Edit
+                    </button>
+                    <button @click="deleteClass(classItem)" class="btn btn-danger btn-sm">
+                      Delete
+                    </button>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
       </div>
 
       <!-- Create/Edit Modal -->
       <div v-if="showCreateModal || showEditModal" class="modal-overlay" @click="closeModal">
-        <div class="modal-content" @click.stop>
+        <div class="modal-content class-form-modal" @click.stop>
           <h2>{{ showEditModal ? 'Edit Class' : 'Create New Class' }}</h2>
           <form @submit.prevent="saveClass">
             <div class="form-group">
@@ -204,6 +222,7 @@
                 step="0.01"
                 placeholder="Enter hourly rate"
               />
+              <p class="form-hint">Auto-filled based on level. You can edit if needed.</p>
             </div>
             <div class="form-group">
               <label for="class-default-duration">Default Lesson Duration *</label>
@@ -215,11 +234,14 @@
                 <option :value="1">1h</option>
                 <option :value="1.5">1.5h</option>
                 <option :value="2">2h</option>
-                <option :value="2.5">2.5h</option>
-                <option :value="3">3h</option>
               </select>
-              <p style="font-size: 12px; color: #666; margin-top: 4px;">
-                Default duration applied to each student when submitting a lesson; can be overridden per student.
+              <p v-if="durationTimeWarning" class="form-hint form-hint--warn">
+                {{ durationTimeWarning }}
+              </p>
+              <p class="form-hint">
+                Auto-filled from class time when the slot is exactly 1h, 1.5h, or 2h. Default duration
+                is applied to each student when submitting a lesson; you can change it or override
+                per student in submission.
               </p>
             </div>
             <div class="form-group">
@@ -227,6 +249,43 @@
                 <input type="checkbox" v-model="formData.active" />
                 Active
               </label>
+            </div>
+            <div class="form-students-section">
+              <h3 class="form-students-title">Students in this Class</h3>
+              <p class="form-students-help">
+                Optional. You can add students now or later from the class page.
+              </p>
+              <ClassStudentSearch
+                :students="allStudents"
+                :disabled-ids="selectedStudentIdSet"
+                @select="addStudentToForm"
+              />
+              <div
+                v-if="formSelectedStudents.length === 0"
+                class="form-students-empty"
+              >
+                No students added yet. You can add them later.
+              </div>
+              <div v-else class="student-chip-row" aria-label="Selected students">
+                <span class="form-students-label">Selected</span>
+                <div class="student-chips">
+                  <span
+                    v-for="s in formSelectedStudents"
+                    :key="s.id"
+                    class="student-chip"
+                  >
+                    {{ s.name }}
+                    <button
+                      type="button"
+                      class="student-chip-remove"
+                      :title="'Remove ' + s.name"
+                      @click="removeStudentFromForm(s.id)"
+                    >
+                      ×
+                    </button>
+                  </span>
+                </div>
+              </div>
             </div>
             <div v-if="error" class="error">{{ error }}</div>
             <div style="display: flex; gap: 10px; margin-top: 20px;">
@@ -248,16 +307,41 @@
 import { ref, onMounted, onUnmounted, computed } from 'vue'
 import { api } from '../api'
 import Navbar from '../components/Navbar.vue'
+import ClassStudentSearch from '../components/ClassStudentSearch.vue'
+import {
+  timeToMinutes,
+  calculateDurationHours,
+  isValidDuration,
+  getDefaultRateByLevel,
+  getClassRevenuePerLesson
+} from '../constants/classForm'
+import { useAdminData } from '../composables/useAdminData'
 
 export default {
   name: 'ClassesView',
   components: {
-    Navbar
+    Navbar,
+    ClassStudentSearch
   },
   setup() {
-    const loading = ref(true)
-    const classes = ref([])
-    const teachers = ref([])
+    const {
+      classes,
+      teachers: teachersStore,
+      students: allStudents,
+      loadAdminData,
+      refreshClasses,
+      refreshStudents,
+      refreshLessons,
+      refreshAttendance,
+      isLoaded,
+      isLoading
+    } = useAdminData()
+    const loading = computed(() => isLoading.value && !isLoaded.value)
+    const teachers = computed(() =>
+      (teachersStore.value || [])
+        .filter((t) => t.active !== false)
+        .sort((a, b) => (a.name || '').localeCompare(b.name || ''))
+    )
     const showCreateModal = ref(false)
     const showEditModal = ref(false)
     const error = ref('')
@@ -275,9 +359,21 @@ export default {
       active: true
     })
     const editingId = ref(null)
+    const formSelectedStudents = ref([]) // { id, name }[]
+    const initialActiveStudentIds = ref(new Set())
+    const enrolmentIdByStudentId = ref({})
     const openTimeDropdown = ref(null)
     const startTimeWrapRef = ref(null)
     const endTimeWrapRef = ref(null)
+    const durationTimeWarning = ref('')
+
+    const currencyFormatter = new Intl.NumberFormat('en-SG', {
+      style: 'currency',
+      currency: 'SGD',
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2
+    })
+    const formatCurrency = (value) => currencyFormatter.format(Number(value) || 0)
 
     // Time slots depend on day: weekday = 2pm onwards; weekend = 8am–9pm
     const buildTimeOptions = (startHour, endHour) => {
@@ -336,6 +432,23 @@ export default {
       if (clearTimes) {
         formData.value.startTime = ''
         formData.value.endTime = ''
+        durationTimeWarning.value = ''
+      }
+    }
+
+    const syncDurationFromClassTimes = () => {
+      const start = formData.value.startTime
+      const end = formData.value.endTime
+      durationTimeWarning.value = ''
+      if (!start || !end) return
+      if (start >= end) return
+      const hours = calculateDurationHours(start, end)
+      if (hours == null) return
+      if (isValidDuration(hours)) {
+        formData.value.defaultDurationHours = hours
+      } else {
+        durationTimeWarning.value =
+          'Selected time does not match 1h, 1.5h, or 2h. Please choose duration manually.'
       }
     }
 
@@ -358,6 +471,7 @@ export default {
       if (which === 'start') formData.value.startTime = value
       else formData.value.endTime = value
       openTimeDropdown.value = null
+      syncDurationFromClassTimes()
     }
 
     const closeTimeDropdownOnClickOutside = (e) => {
@@ -476,6 +590,10 @@ export default {
         formData.value.stream = ''
       }
       formData.value.subject = ''
+      const r = getDefaultRateByLevel(formData.value.level)
+      if (r > 0) {
+        formData.value.ratePerHour = r
+      }
       updateAutoClassName()
     }
 
@@ -501,32 +619,58 @@ export default {
       Sunday: 7
     }
 
-    const timeToMinutes = (time) => {
-      if (!time || typeof time !== 'string') return 9999
-      const trimmed = time.trim()
-      const match = trimmed.match(/^(\d{1,2}):(\d{2})\s*(AM|PM)?$/i)
-      if (!match) return 9999
-      let hours = parseInt(match[1], 10)
-      const minutes = parseInt(match[2], 10)
-      const period = match[3] ? match[3].toUpperCase() : null
-      if (Number.isNaN(hours) || Number.isNaN(minutes)) return 9999
-      if (period === 'PM' && hours !== 12) hours += 12
-      if (period === 'AM' && hours === 12) hours = 0
-      return hours * 60 + minutes
-    }
-
     const sortedClasses = computed(() => {
       return [...classes.value].sort((a, b) => {
         const dayA = DAY_ORDER[a.day_of_week] ?? 999
         const dayB = DAY_ORDER[b.day_of_week] ?? 999
         if (dayA !== dayB) return dayA - dayB
 
-        const timeA = timeToMinutes(a.start_time)
-        const timeB = timeToMinutes(b.start_time)
+        const timeA = timeToMinutes(a.start_time) ?? 9999
+        const timeB = timeToMinutes(b.start_time) ?? 9999
         if (timeA !== timeB) return timeA - timeB
 
         return (a.name || '').localeCompare(b.name || '')
       })
+    })
+
+    // Resolve the best teacher name for a class, supporting all the historical
+    // field shapes so no data migration is needed.
+    const getClassTeacherName = (cls) => {
+      if (!cls) return 'Without Assigned Teacher'
+      const teacherId =
+        cls.main_teacher_id ||
+        cls.mainTeacherId ||
+        cls.teacherId
+      if (teacherId && Array.isArray(teachersStore.value)) {
+        const matched = teachersStore.value.find((t) => t.id === teacherId)
+        if (matched?.name) return matched.name
+      }
+      const stored =
+        cls.teacherName ||
+        cls.mainTeacherName ||
+        cls.mainTeacher ||
+        cls.teacher
+      if (stored && typeof stored === 'string' && stored.trim()) {
+        return stored.trim()
+      }
+      return 'Without Assigned Teacher'
+    }
+
+    const groupedClassesByTeacher = computed(() => {
+      const groups = {}
+      for (const cls of sortedClasses.value) {
+        const name = getClassTeacherName(cls)
+        if (!groups[name]) groups[name] = []
+        groups[name].push(cls)
+      }
+      return Object.entries(groups)
+        .map(([teacherName, classList]) => ({ teacherName, classes: classList }))
+        .sort((a, b) => {
+          // Push the unassigned bucket to the bottom; everything else is A→Z.
+          if (a.teacherName === 'Without Assigned Teacher') return 1
+          if (b.teacherName === 'Without Assigned Teacher') return -1
+          return a.teacherName.localeCompare(b.teacherName)
+        })
     })
 
     const timeRangeError = computed(() => {
@@ -537,28 +681,34 @@ export default {
       return ''
     })
 
-    const loadTeachers = async () => {
-      try {
-        const list = await api.get('/api/teachers')
-        teachers.value = (list || []).filter(t => t.active !== false).sort((a, b) => (a.name || '').localeCompare(b.name || ''))
-      } catch (err) {
-        console.error('Error loading teachers:', err)
-        teachers.value = []
-      }
+    const selectedStudentIdSet = computed(
+      () => new Set(formSelectedStudents.value.map((s) => s.id))
+    )
+
+    const addStudentToForm = (student) => {
+      if (!student?.id) return
+      if (formSelectedStudents.value.some((s) => s.id === student.id)) return
+      formSelectedStudents.value = [
+        ...formSelectedStudents.value,
+        { id: student.id, name: student.name || '—' }
+      ]
+    }
+    const removeStudentFromForm = (studentId) => {
+      formSelectedStudents.value = formSelectedStudents.value.filter(
+        (s) => s.id !== studentId
+      )
     }
 
-    const loadClasses = async () => {
-      try {
-        const list = await api.get('/api/classes')
-        classes.value = list || []
-      } catch (error) {
-        console.error('Error loading classes:', error)
-      } finally {
-        loading.value = false
-      }
+    const openCreateModal = () => {
+      formSelectedStudents.value = []
+      initialActiveStudentIds.value = new Set()
+      enrolmentIdByStudentId.value = {}
+      durationTimeWarning.value = ''
+      showCreateModal.value = true
     }
 
-    const editClass = (classItem) => {
+    const editClass = async (classItem) => {
+      durationTimeWarning.value = ''
       editingId.value = classItem.id
       const existingRate =
         classItem.rate_per_hour ??
@@ -568,6 +718,10 @@ export default {
       const existingDuration =
         classItem.default_duration_hours ??
         classItem.defaultDurationHours
+      let durationVal = Number(existingDuration) > 0 ? Number(existingDuration) : 2
+      if (![1, 1.5, 2].includes(durationVal)) {
+        durationVal = 2
+      }
       formData.value = {
         stream: classItem.stream || '',
         name: classItem.name || '',
@@ -578,10 +732,33 @@ export default {
         endTime: classItem.end_time || '',
         mainTeacherId: classItem.main_teacher_id || '',
         ratePerHour: existingRate === undefined || existingRate === null ? null : Number(existingRate),
-        defaultDurationHours: Number(existingDuration) > 0 ? Number(existingDuration) : 2,
+        defaultDurationHours: durationVal,
         active: classItem.active !== false
       }
       onDayChange() // clear start/end if outside selected day's time range
+      formSelectedStudents.value = []
+      initialActiveStudentIds.value = new Set()
+      enrolmentIdByStudentId.value = {}
+      try {
+        const detail = await api.get(`/api/classes/${classItem.id}`)
+        const rows = detail.students || []
+        const active = rows.filter((r) => r.status === 'active')
+        formSelectedStudents.value = active.map((r) => ({
+          id: r.student_id,
+          name: r.studentName || '—'
+        }))
+        initialActiveStudentIds.value = new Set(
+          active.map((r) => r.student_id).filter(Boolean)
+        )
+        const m = {}
+        for (const r of rows) {
+          if (r.student_id) m[r.student_id] = r.id
+        }
+        enrolmentIdByStudentId.value = m
+      } catch (e) {
+        console.error('Error loading class enrolments:', e)
+        formSelectedStudents.value = []
+      }
       showEditModal.value = true
     }
 
@@ -589,7 +766,12 @@ export default {
       if (!confirm(`Permanently delete class "${classItem.name}"? This will also delete all lessons, attendance records, and enrolments for this class. This cannot be undone.`)) return
       try {
         await api.delete(`/api/classes/${classItem.id}`)
-        await loadClasses()
+        await Promise.all([
+          refreshClasses(),
+          refreshStudents(),
+          refreshLessons(),
+          refreshAttendance()
+        ])
       } catch (err) {
         console.error('Error deleting class:', err)
         error.value = err.message || 'Error deleting class'
@@ -630,11 +812,44 @@ export default {
         }
         if (showEditModal.value && editingId.value) {
           await api.put(`/api/classes/${editingId.value}`, classData)
+          const classId = editingId.value
+          const final = new Set(formSelectedStudents.value.map((s) => s.id))
+          const initial = initialActiveStudentIds.value
+          for (const sid of final) {
+            if (!initial.has(sid)) {
+              await api.post('/api/enrolments', {
+                student_id: sid,
+                class_id: classId
+              })
+            }
+          }
+          for (const sid of initial) {
+            if (!final.has(sid)) {
+              const eid = enrolmentIdByStudentId.value[sid]
+              if (eid) {
+                await api.put(`/api/enrolments/${eid}`, { status: 'inactive' })
+              }
+            }
+          }
         } else {
-          await api.post('/api/classes', classData)
+          const created = await api.post('/api/classes', classData)
+          const newId = created && created.id
+          if (newId) {
+            for (const s of formSelectedStudents.value) {
+              await api.post('/api/enrolments', {
+                student_id: s.id,
+                class_id: newId
+              })
+            }
+          }
         }
         closeModal()
-        await loadClasses()
+        await Promise.all([
+          refreshClasses(),
+          refreshStudents(),
+          refreshLessons(),
+          refreshAttendance()
+        ])
       } catch (err) {
         error.value = err.message || 'Error saving class'
       }
@@ -657,7 +872,11 @@ export default {
         defaultDurationHours: 2,
         active: true
       }
+      formSelectedStudents.value = []
+      initialActiveStudentIds.value = new Set()
+      enrolmentIdByStudentId.value = {}
       error.value = ''
+      durationTimeWarning.value = ''
     }
 
     const getRatePerHour = (classItem) => {
@@ -671,17 +890,8 @@ export default {
       return Number.isFinite(n) ? n : 0
     }
 
-    const getDefaultDuration = (classItem) => {
-      const raw =
-        classItem?.default_duration_hours ??
-        classItem?.defaultDurationHours
-      const n = Number(raw)
-      return Number.isFinite(n) && n > 0 ? n : 2
-    }
-
     onMounted(async () => {
-      await loadTeachers()
-      await loadClasses()
+      await loadAdminData()
       document.addEventListener('click', closeTimeDropdownOnClickOutside)
     })
 
@@ -693,6 +903,7 @@ export default {
       loading,
       classes,
       sortedClasses,
+      groupedClassesByTeacher,
       teachers,
       showCreateModal,
       showEditModal,
@@ -719,7 +930,15 @@ export default {
       saveClass,
       closeModal,
       getRatePerHour,
-      getDefaultDuration
+      getClassRevenuePerLesson,
+      formatCurrency,
+      durationTimeWarning,
+      allStudents,
+      formSelectedStudents,
+      selectedStudentIdSet,
+      addStudentToForm,
+      removeStudentFromForm,
+      openCreateModal
     }
   }
 }
@@ -739,6 +958,14 @@ export default {
   z-index: 1000;
 }
 
+.class-name-link {
+  color: var(--color-primary, #4f46e5);
+  font-weight: 600;
+  text-decoration: none;
+}
+.class-name-link:hover {
+  text-decoration: underline;
+}
 .modal-content {
   background: white;
   padding: 30px;
@@ -747,6 +974,71 @@ export default {
   width: 90%;
   max-height: 90vh;
   overflow-y: auto;
+}
+.class-form-modal {
+  max-width: 540px;
+}
+.form-students-section {
+  margin-top: 20px;
+  padding-top: 16px;
+  border-top: 1px solid #e2e8f0;
+}
+.form-students-title {
+  font-size: 1rem;
+  font-weight: 600;
+  margin: 0 0 4px;
+  color: #0f172a;
+}
+.form-students-help {
+  font-size: 0.8125rem;
+  color: #64748b;
+  margin: 0 0 10px;
+}
+.form-students-empty {
+  font-size: 0.85rem;
+  color: #64748b;
+  margin: 8px 0 0;
+}
+.form-students-label {
+  display: block;
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: #64748b;
+  margin-bottom: 6px;
+}
+.student-chip-row {
+  margin-top: 12px;
+}
+.student-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.student-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 8px 4px 10px;
+  background: #eef2ff;
+  border: 1px solid #c7d2fe;
+  border-radius: 999px;
+  font-size: 0.85rem;
+  color: #312e81;
+}
+.student-chip-remove {
+  appearance: none;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  font-size: 1.1rem;
+  line-height: 1;
+  padding: 0 0 0 2px;
+  color: #6366f1;
+}
+.student-chip-remove:hover {
+  color: #b91c1c;
 }
 
 .modal-content h2 {
@@ -906,5 +1198,79 @@ export default {
   margin-top: 8px;
   font-size: 0.8125rem;
   color: var(--color-danger, #dc2626);
+}
+
+.teacher-groups {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.teacher-class-card {
+  padding: 24px;
+  border-radius: 16px;
+  border: 1px solid var(--color-border, #e5e7eb);
+  background: var(--color-surface, #ffffff);
+  box-shadow: 0 2px 8px rgba(15, 23, 42, 0.04);
+}
+
+.teacher-class-title {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 1.125rem;
+  font-weight: 700;
+  color: var(--color-text, #1f2937);
+  margin: 0 0 16px;
+  letter-spacing: -0.01em;
+}
+
+.teacher-class-count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 28px;
+  height: 22px;
+  padding: 0 8px;
+  border-radius: 999px;
+  background: #eef2ff;
+  color: #4f46e5;
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
+.table-wrapper {
+  overflow-x: auto;
+}
+
+@media (max-width: 640px) {
+  .teacher-class-card {
+    padding: 18px;
+  }
+  .teacher-class-title {
+    font-size: 1rem;
+  }
+}
+
+.form-hint {
+  font-size: 12px;
+  color: #666;
+  margin-top: 4px;
+  line-height: 1.4;
+}
+
+.form-hint--warn {
+  color: #b45309;
+}
+
+td.num {
+  white-space: nowrap;
+}
+
+.table-unit {
+  font-size: 0.85em;
+  color: var(--color-text-muted, #64748b);
+  margin-left: 2px;
 }
 </style>

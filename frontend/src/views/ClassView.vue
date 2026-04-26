@@ -25,31 +25,60 @@
         </div>
 
         <div class="grid grid-2">
-          <div class="card">
-            <h2>Enrolled Students</h2>
-            <div v-if="students.length === 0">
-              <p>No students enrolled yet.</p>
+          <div class="card class-students-card">
+            <div class="class-students-header">
+              <h2>Students in this Class</h2>
+              <button
+                type="button"
+                class="btn btn-primary btn-sm"
+                @click="openAddStudentsModal"
+              >
+                Add Student to Class
+              </button>
             </div>
-            <table v-else class="table">
-              <thead>
-                <tr>
-                  <th>Name</th>
-                  <th>Join Date</th>
-                  <th>Status</th>
-                </tr>
-              </thead>
-              <tbody>
-                <tr v-for="student in students" :key="student.id">
-                  <td>{{ student.name }}</td>
-                  <td>{{ formatDate(student.join_date) }}</td>
-                  <td>
-                    <span :class="student.status === 'active' ? 'badge badge-success' : 'badge badge-danger'">
-                      {{ student.status }}
-                    </span>
-                  </td>
-                </tr>
-              </tbody>
-            </table>
+            <div v-if="activeEnrolledRows.length === 0" class="class-students-empty">
+              <p>No students enrolled yet. Use the button above to add students.</p>
+            </div>
+            <div v-else class="table-wrapper">
+              <table class="table">
+                <thead>
+                  <tr>
+                    <th>Student Name</th>
+                    <th>Level</th>
+                    <th>School</th>
+                    <th>Status</th>
+                    <th>Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr
+                    v-for="row in activeEnrolledRows"
+                    :key="row.enrolmentId + '-' + row.studentId"
+                  >
+                    <td>{{ row.name }}</td>
+                    <td>{{ row.level || '—' }}</td>
+                    <td>{{ row.school || '—' }}</td>
+                    <td>
+                      <span
+                        :class="getStudentStatusClass({ status: row.student_status, active: row.student_active })"
+                      >
+                        {{ getStudentStatusLabel({ status: row.student_status, active: row.student_active }) }}
+                      </span>
+                    </td>
+                    <td>
+                      <button
+                        type="button"
+                        class="btn btn-danger btn-sm"
+                        :disabled="enrolmentActionId === row.enrolmentId"
+                        @click="removeStudentFromClass(row)"
+                      >
+                        {{ enrolmentActionId === row.enrolmentId ? '…' : 'Remove from Class' }}
+                      </button>
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
           </div>
 
           <div class="card">
@@ -80,7 +109,8 @@
                 <tr>
                   <th>Date</th>
                   <th>Teacher</th>
-                  <th>Description</th>
+                  <th>Description / remark</th>
+                  <th>Status</th>
                   <th>Attendance</th>
                   <th>Actions</th>
                 </tr>
@@ -89,9 +119,23 @@
                 <tr v-for="lesson in lessons" :key="lesson.id">
                   <td>{{ formatDate(lesson.lesson_date) }}</td>
                   <td>{{ lesson.teacherName }}</td>
-                  <td>{{ lesson.description || 'No description' }}</td>
                   <td>
-                    {{ getPresentCount(lesson.attendance) }} / {{ getTotalCount(lesson.attendance) }}
+                    <span v-if="isMissedLesson(lesson)">{{ lesson.remark || lesson.remarks || '—' }}</span>
+                    <span v-else>{{ lesson.description || 'No description' }}</span>
+                  </td>
+                  <td>
+                    <span
+                      v-if="isMissedLesson(lesson)"
+                      class="badge"
+                      style="background:#ffedd5;color:#9a3412;font-weight:600;"
+                    >Missed</span>
+                    <span v-else class="badge badge-success">Conducted</span>
+                  </td>
+                  <td>
+                    <span v-if="isMissedLesson(lesson)">Missed (no charge)</span>
+                    <template v-else>
+                      {{ getPresentCount(lesson.attendance) }} / {{ getTotalCount(lesson.attendance) }}
+                    </template>
                   </td>
                   <td>
                     <div class="lesson-row-actions">
@@ -124,19 +168,26 @@
           <div style="margin-bottom: 15px;">
             <strong>Teacher:</strong> {{ selectedLesson.teacherName }}
           </div>
-          <div style="margin-bottom: 15px;">
+          <div v-if="isMissedLesson(selectedLesson)" style="margin-bottom: 15px;">
+            <strong>Remark:</strong>
+            <p>{{ selectedLesson.remark || selectedLesson.remarks || '—' }}</p>
+          </div>
+          <div v-else style="margin-bottom: 15px;">
             <strong>Description:</strong>
             <p>{{ selectedLesson.description || 'No description' }}</p>
           </div>
-          <div style="margin-bottom: 15px;">
+          <div v-if="!isMissedLesson(selectedLesson)" style="margin-bottom: 15px;">
             <strong>Homework:</strong>
             <p>{{ selectedLesson.homework || 'No homework assigned' }}</p>
           </div>
-          <div style="margin-bottom: 15px;" v-if="selectedLesson.materials_link">
+          <div
+            v-if="!isMissedLesson(selectedLesson) && selectedLesson.materials_link"
+            style="margin-bottom: 15px;"
+          >
             <strong>Materials:</strong>
             <a :href="selectedLesson.materials_link" target="_blank">{{ selectedLesson.materials_link }}</a>
           </div>
-          <div style="margin-bottom: 15px;">
+          <div v-if="!isMissedLesson(selectedLesson)" style="margin-bottom: 15px;">
             <strong>Attendance:</strong>
             <table class="table" style="margin-top: 10px;">
               <thead>
@@ -159,6 +210,9 @@
               </tbody>
             </table>
           </div>
+          <p v-else class="class-lesson-missed-hint" style="margin-bottom: 15px;">
+            Students are marked <strong>Missed</strong> with no charge for this session.
+          </p>
           <button @click="selectedLesson = null" class="btn btn-secondary">Close</button>
         </div>
       </div>
@@ -199,6 +253,16 @@
               </div>
             </div>
 
+            <div v-if="editingIsMissed" class="form-group">
+              <label>Remark / Reason *</label>
+              <textarea
+                v-model="editLessonForm.remark"
+                rows="3"
+                placeholder="e.g. Teacher sick, public holiday, class cancelled, student unable to attend"
+                required
+              ></textarea>
+            </div>
+            <template v-else>
             <div class="form-group">
               <label>Description</label>
               <textarea
@@ -223,9 +287,10 @@
                 placeholder="https://..."
               />
             </div>
+            </template>
           </section>
 
-          <section class="edit-lesson-section">
+          <section v-if="!editingIsMissed" class="edit-lesson-section">
             <div class="edit-lesson-section-header">
               <h3>Student Attendance</h3>
               <button
@@ -331,6 +396,71 @@
         </div>
       </div>
 
+      <!-- Add students to class (enrolment) -->
+      <div
+        v-if="showAddStudentsModal"
+        class="modal-overlay"
+        @click.self="closeAddStudentsModal"
+      >
+        <div class="modal-content class-add-students-modal" @click.stop>
+          <h2>Add students to this class</h2>
+          <p class="add-students-hint">
+            Search by name, level, school, or parent contact. Only students not
+            already enrolled in this class are shown. Select one or more, then
+            confirm.
+          </p>
+          <ClassStudentSearch
+            :students="studentsAvailableForEnrolmentPicker"
+            :disabled-ids="[]"
+            @select="onStageStudentForClass"
+          />
+          <div
+            v-if="stagedAddStudents.length"
+            class="staged-enrol-row"
+          >
+            <span class="staged-label">To add</span>
+            <div class="staged-chips">
+              <span
+                v-for="s in stagedAddStudents"
+                :key="s.id"
+                class="staged-chip"
+              >
+                {{ s.name }}
+                <button
+                  type="button"
+                  class="staged-chip-remove"
+                  :title="'Remove ' + s.name"
+                  @click="unstageStudentForClass(s.id)"
+                >
+                  ×
+                </button>
+              </span>
+            </div>
+          </div>
+          <div v-else class="add-students-empty">
+            No students selected yet. Use the search above.
+          </div>
+          <div class="add-students-actions">
+            <button
+              type="button"
+              class="btn btn-secondary"
+              :disabled="enrolmentBulkSaving"
+              @click="closeAddStudentsModal"
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              class="btn btn-primary"
+              :disabled="!stagedAddStudents.length || enrolmentBulkSaving"
+              @click="commitAddStudentsToClass"
+            >
+              {{ enrolmentBulkSaving ? 'Adding…' : 'Confirm add' }}
+            </button>
+          </div>
+        </div>
+      </div>
+
       <!-- Makeup Student Search Modal -->
       <div
         v-if="showMakeupSearchModal"
@@ -368,10 +498,15 @@
             <li
               v-for="option in filteredMakeupStudents"
               :key="option.id"
-              class="makeup-result-item"
+              :class="['makeup-result-item', { 'makeup-result-item-inactive': !isStudentActive(option) }]"
             >
               <div class="makeup-result-info">
-                <div class="makeup-result-name">{{ option.name }}</div>
+                <div class="makeup-result-name">
+                  <span>{{ option.name }}</span>
+                  <span :class="getStudentStatusClass(option)">
+                    {{ getStudentStatusLabel(option) }}
+                  </span>
+                </div>
                 <div class="makeup-result-meta">
                   <span v-if="option.level">{{ option.level }}</span>
                   <span v-if="option.school"> · {{ option.school }}</span>
@@ -399,6 +534,7 @@ import { ref, reactive, onMounted, computed } from 'vue'
 import { api } from '../api'
 import { useRoute } from 'vue-router'
 import Navbar from '../components/Navbar.vue'
+import ClassStudentSearch from '../components/ClassStudentSearch.vue'
 import {
   ATTENDANCE_STATUSES,
   ATTENDANCE_STATUS_OPTIONS,
@@ -410,11 +546,19 @@ import {
   getClassDefaultDuration,
   formatDurationLabel
 } from '../constants/billing'
+import {
+  isStudentActive,
+  getStudentStatusRank,
+  getStudentStatusLabel,
+  getStudentStatusClass
+} from '../constants/studentStatus'
+import { isMissedLesson } from '../constants/lessons'
 
 export default {
   name: 'ClassView',
   components: {
-    Navbar
+    Navbar,
+    ClassStudentSearch
   },
   setup() {
     const route = useRoute()
@@ -425,6 +569,11 @@ export default {
     const lessons = ref([])
     const selectedLesson = ref(null)
     const allStudents = ref({})
+    const fullStudentDirectory = ref([])
+    const showAddStudentsModal = ref(false)
+    const stagedAddStudents = ref([])
+    const enrolmentBulkSaving = ref(false)
+    const enrolmentActionId = ref(null)
 
     const lessonSubmissionUrl = computed(() => {
       return `${window.location.origin}/lesson/${route.params.id}`
@@ -481,6 +630,8 @@ export default {
           return 'badge badge-danger'
         case ATTENDANCE_STATUSES.ABSENT_CHARGED:
           return 'badge badge-danger'
+        case ATTENDANCE_STATUSES.MISSED:
+          return 'badge'
         default:
           return 'badge'
       }
@@ -491,6 +642,66 @@ export default {
     const copyLink = () => {
       navigator.clipboard.writeText(lessonSubmissionUrl.value)
       alert('Link copied to clipboard!')
+    }
+
+    const loadFullStudentDirectory = async () => {
+      try {
+        const list = await api.get('/api/students')
+        fullStudentDirectory.value = list || []
+      } catch (e) {
+        console.error('Error loading students directory:', e)
+        fullStudentDirectory.value = []
+      }
+    }
+
+    const openAddStudentsModal = () => {
+      stagedAddStudents.value = []
+      showAddStudentsModal.value = true
+    }
+    const closeAddStudentsModal = () => {
+      showAddStudentsModal.value = false
+      stagedAddStudents.value = []
+    }
+    const onStageStudentForClass = (s) => {
+      if (stagedAddStudents.value.some((x) => x.id === s.id)) return
+      stagedAddStudents.value = [...stagedAddStudents.value, s]
+    }
+    const unstageStudentForClass = (id) => {
+      stagedAddStudents.value = stagedAddStudents.value.filter((x) => x.id !== id)
+    }
+    const commitAddStudentsToClass = async () => {
+      if (!stagedAddStudents.value.length) return
+      enrolmentBulkSaving.value = true
+      try {
+        const classId = route.params.id
+        for (const s of stagedAddStudents.value) {
+          await api.post('/api/enrolments', { student_id: s.id, class_id: classId })
+        }
+        closeAddStudentsModal()
+        await loadClassData()
+      } catch (e) {
+        window.alert(e.message || 'Failed to add students')
+      } finally {
+        enrolmentBulkSaving.value = false
+      }
+    }
+
+    const removeStudentFromClass = async (row) => {
+      if (!row.enrolmentId || row.status !== 'active') return
+      const ok = window.confirm(
+        `Remove ${row.name} from this class?\n\n` +
+          'Past lessons and attendance are not deleted. This only ends their enrolment in this class.'
+      )
+      if (!ok) return
+      enrolmentActionId.value = row.enrolmentId
+      try {
+        await api.put(`/api/enrolments/${row.enrolmentId}`, { status: 'inactive' })
+        await loadClassData()
+      } catch (e) {
+        window.alert(e.message || 'Failed to remove')
+      } finally {
+        enrolmentActionId.value = null
+      }
     }
 
     const viewLesson = (lesson) => {
@@ -536,15 +747,40 @@ export default {
       description: '',
       homework: '',
       materialsLink: '',
+      remark: '',
       attendanceRows: []
+    })
+
+    const editingIsMissed = computed(() => {
+      if (!editingLessonId.value) return false
+      const le = lessons.value.find((l) => l.id === editingLessonId.value)
+      return isMissedLesson(le)
     })
 
     const visibleAttendanceRows = computed(() =>
       editLessonForm.attendanceRows.filter((r) => !r.shouldDelete)
     )
 
-    const enrolledStudentIdSet = computed(
-      () => new Set(students.value.map((s) => s.id))
+    const enrolledStudentIdSet = computed(() =>
+      new Set(
+        students.value
+          .filter((r) => r.status === 'active')
+          .map((r) => r.studentId)
+      )
+    )
+
+    const studentsAvailableForEnrolmentPicker = computed(() => {
+      const block = new Set([
+        ...enrolledStudentIdSet.value,
+        ...stagedAddStudents.value.map((s) => s.id)
+      ])
+      return (fullStudentDirectory.value || []).filter(
+        (s) => s.id && !block.has(s.id)
+      )
+    })
+
+    const activeEnrolledRows = computed(() =>
+      students.value.filter((r) => r.status === 'active')
     )
 
     const resolveRowDuration = (row, classDefault) => {
@@ -599,6 +835,7 @@ export default {
       editLessonForm.homework = lesson.homework || ''
       editLessonForm.materialsLink =
         lesson.materials_link || lesson.materialsLink || ''
+      editLessonForm.remark = lesson.remark || lesson.remarks || ''
       editLessonForm.attendanceRows = buildEditableAttendanceRows(lesson)
       showEditLessonModal.value = true
     }
@@ -618,8 +855,10 @@ export default {
     const makeupLoading = ref(false)
     const makeupCatalog = ref([])
 
-    const loadMakeupCatalogIfNeeded = async () => {
-      if (makeupCatalog.value.length > 0) return
+    // Always refetch the catalog when the picker opens so newly-added or
+    // newly-edited students (including inactive ones) show up immediately
+    // without requiring a page reload.
+    const loadMakeupCatalog = async () => {
       makeupLoading.value = true
       try {
         const list = await api.getPublic('/api/public/students-minimal')
@@ -635,7 +874,7 @@ export default {
     const openMakeupSearch = async () => {
       makeupSearch.value = ''
       showMakeupSearchModal.value = true
-      await loadMakeupCatalogIfNeeded()
+      await loadMakeupCatalog()
     }
 
     const closeMakeupSearch = () => {
@@ -649,16 +888,34 @@ export default {
       )
     }
 
+    // Sorts makeup candidates so active students always appear first and
+    // inactive ones (dropped / graduated / stopped / legacy inactive) fall to
+    // the bottom. Within each group, sort alphabetically by name. Inactive
+    // students are NEVER filtered out — they remain selectable as makeup.
+    const sortMakeupCandidates = (list) =>
+      [...list].sort((a, b) => {
+        const rankDiff = getStudentStatusRank(a) - getStudentStatusRank(b)
+        if (rankDiff !== 0) return rankDiff
+        return (a.name || '').localeCompare(b.name || '', undefined, {
+          sensitivity: 'base'
+        })
+      })
+
     const filteredMakeupStudents = computed(() => {
       const term = makeupSearch.value.trim().toLowerCase()
       const list = makeupCatalog.value || []
-      if (!term) return list.slice(0, 50)
-      return list
-        .filter((s) => {
-          const hay = `${s.name} ${s.school} ${s.level} ${s.parent_contact}`.toLowerCase()
-          return hay.includes(term)
-        })
-        .slice(0, 50)
+      // Inactive students are NEVER excluded by status. Already-added students
+      // remain visible in the list but the Add button is disabled for them.
+      const matched = term
+        ? list.filter((s) => {
+            const hay = [s.name, s.school, s.level, s.parent_contact, s.parent_name]
+              .filter(Boolean)
+              .join(' ')
+              .toLowerCase()
+            return hay.includes(term)
+          })
+        : list
+      return sortMakeupCandidates(matched).slice(0, 50)
     })
 
     const addMakeupStudentToEditedLesson = (student) => {
@@ -705,6 +962,43 @@ export default {
       }
       if (!editLessonForm.endTime) {
         editLessonError.value = 'End time is required.'
+        return
+      }
+
+      if (editingIsMissed.value) {
+        const r = (editLessonForm.remark || '').trim()
+        if (!r) {
+          editLessonError.value = 'Please enter a reason for the missed lesson.'
+          return
+        }
+        const payload = {
+          lesson_date: editLessonForm.lessonDate,
+          start_time: editLessonForm.startTime,
+          end_time: editLessonForm.endTime,
+          remark: r,
+          lesson_type: 'missed',
+          status: 'missed',
+          description: '',
+          homework: '',
+          materials_link: ''
+        }
+        editLessonSaving.value = true
+        try {
+          await api.put(`/api/lessons/${editingLessonId.value}`, payload)
+          editLessonSuccess.value = true
+          await reloadLessons()
+          setTimeout(() => {
+            editLessonSuccess.value = false
+            showEditLessonModal.value = false
+            editingLessonId.value = null
+            editLessonForm.attendanceRows = []
+          }, 800)
+        } catch (err) {
+          console.error('Error saving lesson record:', err)
+          editLessonError.value = err.message || 'Error saving lesson record.'
+        } finally {
+          editLessonSaving.value = false
+        }
         return
       }
 
@@ -775,13 +1069,24 @@ export default {
         if (data) {
           classData.value = data
           const stu = data.students || []
-          students.value = stu.map(s => ({
-            id: s.id || s.student_id,
+          students.value = stu.map((s) => ({
+            enrolmentId: s.id,
+            studentId: s.student_id,
             name: s.studentName || s.name,
+            level: s.level,
+            school: s.school,
+            student_status: s.student_status,
+            student_active: s.student_active,
             join_date: s.join_date,
             status: s.status
           }))
-          allStudents.value = Object.fromEntries(stu.map(s => [(s.student_id || s.id), { name: s.studentName || s.name }]))
+          const nameMap = {}
+          for (const row of stu) {
+            if (row.student_id) {
+              nameMap[row.student_id] = { name: row.studentName || '—' }
+            }
+          }
+          allStudents.value = nameMap
         }
         const lessonsList = await api.get(`/api/classes/${route.params.id}/lessons`)
         lessons.value = lessonsList || []
@@ -795,6 +1100,7 @@ export default {
 
     onMounted(() => {
       loadClassData()
+      loadFullStudentDirectory()
     })
 
     return {
@@ -817,6 +1123,8 @@ export default {
       deleteLessonRecord,
       deletingLessonId,
       showEditLessonModal,
+      isMissedLesson,
+      editingIsMissed,
       editLessonForm,
       editLessonSaving,
       editLessonError,
@@ -836,13 +1144,103 @@ export default {
       isStudentAlreadyAdded,
       attendanceStatusOptions: ATTENDANCE_STATUS_OPTIONS,
       durationOptions: DURATION_OPTIONS,
-      formatDurationLabel
+      formatDurationLabel,
+      isStudentActive,
+      getStudentStatusLabel,
+      getStudentStatusClass,
+      activeEnrolledRows,
+      showAddStudentsModal,
+      stagedAddStudents,
+      studentsAvailableForEnrolmentPicker,
+      enrolmentBulkSaving,
+      enrolmentActionId,
+      openAddStudentsModal,
+      closeAddStudentsModal,
+      onStageStudentForClass,
+      unstageStudentForClass,
+      commitAddStudentsToClass,
+      removeStudentFromClass
     }
   }
 }
 </script>
 
 <style scoped>
+.class-students-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+}
+.class-students-header h2 {
+  margin: 0;
+}
+.class-students-empty {
+  color: #64748b;
+  font-size: 0.95rem;
+}
+.class-students-card .table-wrapper {
+  overflow-x: auto;
+}
+.add-students-hint {
+  font-size: 0.85rem;
+  color: #64748b;
+  margin: 0 0 12px;
+}
+.add-students-empty {
+  font-size: 0.85rem;
+  color: #64748b;
+  margin: 10px 0;
+}
+.staged-enrol-row {
+  margin-top: 12px;
+}
+.staged-label {
+  display: block;
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  color: #64748b;
+  margin-bottom: 6px;
+}
+.staged-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.staged-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 8px 4px 10px;
+  background: #ecfdf5;
+  border: 1px solid #6ee7b7;
+  border-radius: 999px;
+  font-size: 0.85rem;
+}
+.staged-chip-remove {
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  font-size: 1.1rem;
+  line-height: 1;
+  color: #047857;
+}
+.add-students-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 20px;
+}
+.class-add-students-modal {
+  max-width: 480px;
+}
+.muted {
+  color: #94a3b8;
+}
+
 .modal-overlay {
   position: fixed;
   top: 0;
@@ -1071,12 +1469,57 @@ export default {
   border-bottom: none;
 }
 
+.makeup-result-item-inactive {
+  background: #fafafa;
+}
+
 .makeup-result-name {
   font-weight: 600;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
 }
 
 .makeup-result-meta {
   font-size: 12px;
   color: #666;
+}
+
+.student-status {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  font-size: 0.7rem;
+  font-weight: 600;
+  border-radius: 999px;
+  letter-spacing: 0.01em;
+  border: 1px solid transparent;
+  white-space: nowrap;
+}
+.student-status-active {
+  color: #065f46;
+  background: #d1fae5;
+  border-color: #a7f3d0;
+}
+.student-status-dropped {
+  color: #9a3412;
+  background: #ffedd5;
+  border-color: #fed7aa;
+}
+.student-status-graduated {
+  color: #4c1d95;
+  background: #ede9fe;
+  border-color: #ddd6fe;
+}
+.student-status-stopped {
+  color: #334155;
+  background: #e2e8f0;
+  border-color: #cbd5e1;
+}
+.student-status-inactive {
+  color: #475569;
+  background: #f1f5f9;
+  border-color: #e2e8f0;
 }
 </style>

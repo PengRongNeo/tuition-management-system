@@ -1,5 +1,6 @@
 import { createRouter, createWebHistory } from 'vue-router'
 import { api } from '../api'
+import { loadAdminData } from '../composables/useAdminData'
 
 const routes = [
   {
@@ -64,6 +65,9 @@ router.beforeEach((to, from, next) => {
   } else if (requiresGuest && token) {
     next('/dashboard')
   } else {
+    if (requiresAuth && token) {
+      void loadAdminData()
+    }
     next()
   }
 })

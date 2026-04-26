@@ -93,7 +93,7 @@ one for the frontend and one for the backend.
    - `FRONTEND_ORIGIN` — comma-separated list, e.g.
      `https://tms.vercel.app,http://localhost:3000`.
    - `FORM_SUBMIT_SECRET` *(optional)* — Google Form shared secret.
-5. Deploy. Sanity-check `https://<backend>.vercel.app/api/health` → `{ "ok": true }`.
+5. Deploy. Sanity-check `https://<backend>.vercel.app/api/health` — you should see `"ok": true` and `build.publicLessonMissed: true` (if that flag is missing, the deployment is an old build; redeploy from current `main`).
 
 ### Frontend project
 
@@ -111,6 +111,8 @@ one for the frontend and one for the backend.
    redeploy the backend.
 
 ### Notes
+
+- If a public form shows **"Cannot POST /api/public/…"**: the request reached Express but that route is not in the **deployed** server bundle. **Redeploy the backend** project (root `backend/`) with the current code, then confirm `GET /api/health` includes `publicLessonMissed: true` on the URL you set in the frontend’s `VITE_API_BASE_URL`.
 
 - `backend/serviceAccountKey.json` is ignored during Vercel deploys
   (`backend/.vercelignore`). On Vercel you must use the env-var form of the

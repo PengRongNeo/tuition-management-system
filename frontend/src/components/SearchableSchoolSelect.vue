@@ -1,7 +1,11 @@
 <template>
   <div
     class="ss-select"
-    :class="{ 'ss-select--open': open, 'ss-select--custom': isCustomValue }"
+    :class="{
+      'ss-select--open': open,
+      'ss-select--custom': isCustomValue,
+      'ss-select--disabled': effectiveDisabled
+    }"
     @keydown.escape.prevent="closeAndRevert"
   >
     <input
@@ -17,8 +21,10 @@
       :aria-controls="listboxId"
       :aria-activedescendant="activeId"
       aria-autocomplete="list"
-      :placeholder="placeholder"
+      :placeholder="effectivePlaceholder"
       :value="query"
+      :disabled="effectiveDisabled"
+      :aria-disabled="effectiveDisabled"
       class="ss-select__input"
       @input="onInput"
       @focus="onFocus"
@@ -34,6 +40,7 @@
       class="ss-select__chevron"
       :aria-label="open ? 'Close list' : 'Open list'"
       tabindex="-1"
+      :disabled="effectiveDisabled"
       @mousedown.prevent="toggleOpen"
     >
       <svg viewBox="0 0 20 20" width="16" height="16" aria-hidden="true">
@@ -91,7 +98,7 @@
 
 <script>
 import { ref, computed, watch, nextTick, onBeforeUnmount } from 'vue'
-import { SECONDARY_SCHOOLS } from '../constants/schools'
+import { SECONDARY_SCHOOLS, getSchoolsByLevel } from '../constants/schools'
 
 let uid = 0
 
@@ -99,10 +106,16 @@ export default {
   name: 'SearchableSchoolSelect',
   props: {
     modelValue: { type: String, default: '' },
+    // When `level` is provided (even as an empty string) the component
+    // switches to level-aware mode and derives its options from
+    // getSchoolsByLevel(level). When level is undefined the component keeps
+    // its legacy behaviour and uses the `options` prop as the source list.
+    level: { type: String, default: undefined },
     options: { type: Array, default: () => SECONDARY_SCHOOLS },
     placeholder: { type: String, default: 'Search or select school' },
     id: { type: String, default: '' },
-    allowCustom: { type: Boolean, default: true }
+    allowCustom: { type: Boolean, default: true },
+    disabled: { type: Boolean, default: false }
   },
   emits: ['update:modelValue'],
   setup(props, { emit }) {
@@ -115,6 +128,28 @@ export default {
     const listboxId = `${componentId}-listbox`
     const optionId = (idx) => `${componentId}-opt-${idx}`
 
+    const isLevelAware = computed(() => props.level !== undefined)
+
+    const effectiveOptions = computed(() => {
+      if (isLevelAware.value) return getSchoolsByLevel(props.level)
+      return props.options
+    })
+
+    const effectiveDisabled = computed(() => {
+      if (props.disabled) return true
+      if (isLevelAware.value && !(props.level && String(props.level).trim())) {
+        return true
+      }
+      return false
+    })
+
+    const effectivePlaceholder = computed(() => {
+      if (isLevelAware.value && !(props.level && String(props.level).trim())) {
+        return 'Select level first'
+      }
+      return props.placeholder
+    })
+
     watch(
       () => props.modelValue,
       (val) => {
@@ -122,16 +157,30 @@ export default {
       }
     )
 
+    // If the component becomes disabled (e.g. level cleared), make sure the
+    // dropdown is hidden and the input is not focused.
+    watch(
+      effectiveDisabled,
+      (isDisabled) => {
+        if (isDisabled) {
+          open.value = false
+          if (inputRef.value) inputRef.value.blur()
+        }
+      }
+    )
+
     const filtered = computed(() => {
       const q = query.value.trim().toLowerCase()
-      if (!q) return props.options
-      return props.options.filter((s) => s.toLowerCase().includes(q))
+      if (!q) return effectiveOptions.value
+      return effectiveOptions.value.filter((s) => s.toLowerCase().includes(q))
     })
 
     const isCustomValue = computed(() => {
       const v = (props.modelValue || '').trim()
       if (!v) return false
-      return !props.options.some((o) => o.toLowerCase() === v.toLowerCase())
+      return !effectiveOptions.value.some(
+        (o) => o.toLowerCase() === v.toLowerCase()
+      )
     })
 
     const activeId = computed(() =>
@@ -152,6 +201,7 @@ export default {
     }
 
     const openList = () => {
+      if (effectiveDisabled.value) return
       open.value = true
       const currentIdx = filtered.value.findIndex(
         (o) => o.toLowerCase() === (props.modelValue || '').toLowerCase()
@@ -165,6 +215,7 @@ export default {
     }
 
     const onInput = (e) => {
+      if (effectiveDisabled.value) return
       query.value = e.target.value
       if (!open.value) open.value = true
       activeIndex.value = filtered.value.length > 0 ? 0 : -1
@@ -221,7 +272,7 @@ export default {
       setTimeout(() => {
         if (!open.value) return
         const typed = query.value.trim()
-        const exactMatch = props.options.find(
+        const exactMatch = effectiveOptions.value.find(
           (o) => o.toLowerCase() === typed.toLowerCase()
         )
         if (exactMatch) {
@@ -243,6 +294,7 @@ export default {
     }
 
     const toggleOpen = () => {
+      if (effectiveDisabled.value) return
       if (open.value) {
         open.value = false
         if (inputRef.value) inputRef.value.blur()
@@ -267,6 +319,8 @@ export default {
       listboxId,
       optionId,
       isCustomValue,
+      effectiveDisabled,
+      effectivePlaceholder,
       onFocus,
       onBlur,
       onInput,
@@ -309,6 +363,21 @@ export default {
 .ss-select--custom .ss-select__input {
   border-color: var(--color-warning, #d97706);
   background: var(--color-warning-bg, #fffbeb);
+}
+
+.ss-select--disabled .ss-select__input,
+.ss-select__input:disabled {
+  background: #f1f5f9;
+  color: var(--color-text-muted, #64748b);
+  cursor: not-allowed;
+  border-color: var(--color-border);
+  box-shadow: none;
+}
+
+.ss-select--disabled .ss-select__chevron,
+.ss-select__chevron:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
 }
 
 .ss-select__chevron {
