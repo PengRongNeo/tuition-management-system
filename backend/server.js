@@ -193,6 +193,43 @@ app
     }
   })
 
+// --- Cron: Telegram lesson reminders (cron-job.org, Vercel Cron, etc.) ---
+async function handleTelegramLessonRemindersCron (req, res) {
+  try {
+    const authHeader = req.headers.authorization || ''
+    const cronSecret = process.env.CRON_SECRET
+    const xCronRaw = req.headers['x-cron-secret']
+    const xCronSec = Array.isArray(xCronRaw) ? xCronRaw[0] : xCronRaw
+
+    if (
+      cronSecret &&
+      authHeader !== `Bearer ${cronSecret}` &&
+      xCronSec !== cronSecret
+    ) {
+      return res.status(401).json({ error: 'Unauthorized' })
+    }
+
+    const result = await runTelegramLessonReminders({ db, admin, log: console.log })
+
+    return res.json({
+      ok: true,
+      source: 'cron',
+      result
+    })
+  } catch (error) {
+    console.error('Telegram reminder cron failed:', error)
+    return res.status(500).json({
+      ok: false,
+      error: error.message || 'Cron failed'
+    })
+  }
+}
+
+app.get(
+  ['/api/cron/telegram-lesson-reminders', '/api/cron/telegram-lesson-reminders/'],
+  handleTelegramLessonRemindersCron
+)
+
 // Auth middleware: verify Firebase ID token
 async function requireAuth(req, res, next) {
   const authHeader = req.headers.authorization
@@ -1655,24 +1692,6 @@ app.get('/api/dashboard', requireAuth, async (req, res) => {
       recentLessons
     })
   } catch (e) {
-    res.status(500).json({ error: e.message })
-  }
-})
-
-// --- Cron: lesson submission reminders (call every 5 min from Vercel Cron or another scheduler) ---
-app.get('/api/cron/telegram-lesson-reminders', async (req, res) => {
-  const secret = process.env.CRON_SECRET
-  if (secret) {
-    const hdr =
-      req.headers['x-cron-secret'] ||
-      (req.headers.authorization || '').replace(/^Bearer\s+/i, '')
-    if (hdr !== secret) return res.status(401).json({ error: 'Unauthorized' })
-  }
-  try {
-    const result = await runTelegramLessonReminders({ db, admin, log: console.log })
-    res.json({ ok: true, ...result })
-  } catch (e) {
-    console.error('[cron telegram-lesson-reminders]', e)
     res.status(500).json({ error: e.message })
   }
 })
