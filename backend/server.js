@@ -193,7 +193,7 @@ app
     }
   })
 
-// --- Cron: Telegram lesson reminders (cron-job.org, Vercel Cron, etc.) ---
+// --- Cron: Telegram lesson reminders (e.g. cron-job.org; GET with CRON_SECRET) ---
 async function handleTelegramLessonRemindersCron (req, res) {
   try {
     const authHeader = req.headers.authorization || ''
@@ -1697,7 +1697,7 @@ app.get('/api/dashboard', requireAuth, async (req, res) => {
 })
 
 // Telegram lesson reminders: long-running Node server polls every 5 minutes.
-// On Vercel, disable polling and schedule GET /api/cron/telegram-lesson-reminders instead.
+// On Vercel, disable polling; use cron-job.org (or similar) to GET /api/cron/telegram-lesson-reminders.
 const TELEGRAM_POLL_MS = 5 * 60 * 1000
 if (process.env.TELEGRAM_BOT_TOKEN && process.env.APP_BASE_URL && !process.env.VERCEL) {
   setTimeout(() => {
