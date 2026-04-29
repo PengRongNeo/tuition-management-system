@@ -174,14 +174,56 @@
                     <template v-else>—</template>
                   </td>
                   <td class="col-fees">
-                    <button
-                      type="button"
-                      class="fee-link"
-                      :title="`View ${student.name}'s fee breakdown for ${currentMonthLabel}`"
-                      @click="openFeeBreakdown(student)"
-                    >
-                      {{ formatCurrency(getStudentFinalFeesThisMonth(student)) }}
-                    </button>
+                    <div class="fees-this-month-cell">
+                      <button
+                        type="button"
+                        class="fee-link"
+                        :title="`View ${student.name}'s fee breakdown for ${currentMonthLabel}`"
+                        @click="openFeeBreakdown(student)"
+                      >
+                        {{ formatCurrency(getStudentFinalFeesThisMonth(student)) }}
+                      </button>
+                      <button
+                        type="button"
+                        class="payment-toggle"
+                        :class="
+                          isStudentMonthPaid(
+                            student.id,
+                            currentMonthKey,
+                            getStudentFinalFeesThisMonth(student)
+                          )
+                            ? 'paid'
+                            : 'unpaid'
+                        "
+                        :title="
+                          isStudentMonthPaid(
+                            student.id,
+                            currentMonthKey,
+                            getStudentFinalFeesThisMonth(student)
+                          )
+                            ? 'Paid — click to mark as unpaid'
+                            : 'Unpaid — click to mark as paid'
+                        "
+                        :disabled="isPaymentToggling(student.id, currentMonthKey)"
+                        @click.stop="
+                          toggleStudentMonthPayment(
+                            student.id,
+                            currentMonthKey,
+                            getStudentFinalFeesThisMonth(student)
+                          )
+                        "
+                      >
+                        {{
+                          isStudentMonthPaid(
+                            student.id,
+                            currentMonthKey,
+                            getStudentFinalFeesThisMonth(student)
+                          )
+                            ? '✅'
+                            : '❌'
+                        }}
+                      </button>
+                    </div>
                   </td>
                   <td>
                     <span :class="getStudentStatusClass(student)">
@@ -703,9 +745,54 @@
                       {{ it.label }}: {{ formatSignedCurrency(it.amount) }}
                     </span>
                   </template>
-                  <span class="billing-month-total billing-month-final">
-                    Final total: {{ formatCurrency(month.finalTotal) }}
-                  </span>
+                  <div
+                    v-if="selectedBillingStudent"
+                    class="billing-month-final-row month-payment-summary"
+                  >
+                    <span class="billing-month-total billing-month-final">
+                      Final total: {{ formatCurrency(month.finalTotal) }}
+                    </span>
+                    <button
+                      type="button"
+                      class="payment-toggle"
+                      :class="
+                        isStudentMonthPaid(
+                          selectedBillingStudent.id,
+                          month.monthKey,
+                          month.finalTotal
+                        )
+                          ? 'paid'
+                          : 'unpaid'
+                      "
+                      :title="
+                        isStudentMonthPaid(
+                          selectedBillingStudent.id,
+                          month.monthKey,
+                          month.finalTotal
+                        )
+                          ? 'Paid — click to mark as unpaid'
+                          : 'Unpaid — click to mark as paid'
+                      "
+                      :disabled="isPaymentToggling(selectedBillingStudent.id, month.monthKey)"
+                      @click="
+                        toggleStudentMonthPayment(
+                          selectedBillingStudent.id,
+                          month.monthKey,
+                          month.finalTotal
+                        )
+                      "
+                    >
+                      {{
+                        isStudentMonthPaid(
+                          selectedBillingStudent.id,
+                          month.monthKey,
+                          month.finalTotal
+                        )
+                          ? '✅ Paid'
+                          : '❌ Unpaid'
+                      }}
+                    </button>
+                  </div>
                 </div>
               </div>
               <div class="billing-history-table-scroll">
@@ -809,6 +896,10 @@ import {
   getFirstChargedLessonFeeFromBreakdown,
   getBillAdjustmentMonthKeyFromDate
 } from '../constants/billAdjustments'
+import {
+  STUDENT_PAYMENTS_COLLECTION,
+  getPaymentDocKey
+} from '../constants/studentPayments'
 import { useAdminData } from '../composables/useAdminData'
 
 function isPrimaryStudent(student) {
@@ -913,6 +1004,146 @@ export default {
       getBillAdjustmentMonthKeyFromDate(new Date())
     )
 
+    const paymentStatusMap = ref({})
+    const paymentToggleKey = ref(null)
+
+    const normalizePaymentDocData = (data) => {
+      const sid = data.studentId
+      const mk = data.monthKey
+      if (!sid || !mk) return null
+      let paidAt = data.paidAt
+      if (paidAt?.toDate) paidAt = paidAt.toDate()
+      let updatedAt = data.updatedAt
+      if (updatedAt?.toDate) updatedAt = updatedAt.toDate()
+      return {
+        studentId: sid,
+        monthKey: mk,
+        paid: Boolean(data.paid),
+        paidAt: paidAt ?? null,
+        updatedAt: updatedAt ?? null
+      }
+    }
+
+    const loadCurrentMonthStudentPayments = async () => {
+      try {
+        await auth.authStateReady?.()
+        if (!auth.currentUser) return
+        const monthKey = currentMonthKey.value
+        if (!monthKey) return
+        const payQ = query(
+          collection(db, STUDENT_PAYMENTS_COLLECTION),
+          where('monthKey', '==', monthKey)
+        )
+        const snap = await getDocs(payQ)
+        const patch = {}
+        snap.forEach((d) => {
+          const row = normalizePaymentDocData(d.data())
+          if (!row) return
+          patch[getPaymentDocKey(row.studentId, row.monthKey)] = row
+        })
+        paymentStatusMap.value = { ...paymentStatusMap.value, ...patch }
+      } catch (e) {
+        console.error('loadCurrentMonthStudentPayments:', e)
+      }
+    }
+
+    const loadStudentPaymentDocsForBilling = async (studentId) => {
+      if (!studentId) return
+      try {
+        await auth.authStateReady?.()
+        if (!auth.currentUser) return
+        const payQ = query(
+          collection(db, STUDENT_PAYMENTS_COLLECTION),
+          where('studentId', '==', studentId)
+        )
+        const snap = await getDocs(payQ)
+        const patch = {}
+        snap.forEach((d) => {
+          const row = normalizePaymentDocData(d.data())
+          if (!row) return
+          patch[getPaymentDocKey(row.studentId, row.monthKey)] = row
+        })
+        paymentStatusMap.value = { ...paymentStatusMap.value, ...patch }
+      } catch (e) {
+        console.error('loadStudentPaymentDocsForBilling:', e)
+      }
+    }
+
+    /**
+     * @param {string} studentId
+     * @param {string} monthKey
+     * @param {number} [finalFeeTotal] When exactly 0, shows paid (✅) unless explicitly marked unpaid in Firestore.
+     */
+    const isStudentMonthPaid = (studentId, monthKey, finalFeeTotal) => {
+      if (!studentId || !monthKey) return false
+      const key = getPaymentDocKey(studentId, monthKey)
+      const row = paymentStatusMap.value[key]
+      if (finalFeeTotal !== undefined && finalFeeTotal !== null) {
+        const fee = Number(finalFeeTotal)
+        if (Number.isFinite(fee) && fee === 0) {
+          if (row && row.paid === false) return false
+          return true
+        }
+      }
+      return Boolean(row?.paid)
+    }
+
+    const isPaymentToggling = (studentId, monthKey) =>
+      paymentToggleKey.value === getPaymentDocKey(studentId, monthKey)
+
+    const toggleStudentMonthPayment = async (studentId, monthKey, finalFeeTotal) => {
+      if (!studentId || !monthKey) return
+      const key = getPaymentDocKey(studentId, monthKey)
+      if (paymentToggleKey.value === key) return
+      paymentToggleKey.value = key
+      const row = paymentStatusMap.value[key]
+      let currentPaid
+      if (finalFeeTotal !== undefined && finalFeeTotal !== null) {
+        const fee = Number(finalFeeTotal)
+        if (Number.isFinite(fee) && fee === 0) {
+          currentPaid = !(row && row.paid === false)
+        } else {
+          currentPaid = Boolean(row?.paid)
+        }
+      } else {
+        currentPaid = Boolean(row?.paid)
+      }
+      const nextPaid = !currentPaid
+      const now = new Date()
+      try {
+        await auth.authStateReady?.()
+        if (!auth.currentUser) {
+          throw new Error('Not signed in. Please log in again.')
+        }
+        await setDoc(
+          doc(db, STUDENT_PAYMENTS_COLLECTION, key),
+          {
+            studentId,
+            monthKey,
+            paid: nextPaid,
+            paidAt: nextPaid ? now : null,
+            updatedAt: now
+          },
+          { merge: true }
+        )
+        paymentStatusMap.value = {
+          ...paymentStatusMap.value,
+          [key]: {
+            studentId,
+            monthKey,
+            paid: nextPaid,
+            paidAt: nextPaid ? now : null,
+            updatedAt: now
+          }
+        }
+      } catch (e) {
+        console.error('toggleStudentMonthPayment:', e)
+        alert(e?.message || 'Failed to update payment status.')
+      } finally {
+        paymentToggleKey.value = null
+      }
+    }
+
     const BILL_ADJ_COLLECTION = 'billAdjustments'
 
     const showModifyBillModal = ref(false)
@@ -967,6 +1198,7 @@ export default {
         if (!auth.currentUser) {
           monthlyLessons.value = []
           monthlyAttendance.value = []
+          paymentStatusMap.value = {}
           return
         }
 
@@ -995,6 +1227,7 @@ export default {
             idSet.has(a.lesson_id || a.lessonId)
           )
         }
+        await loadCurrentMonthStudentPayments()
       } catch (err) {
         console.error('Error loading monthly fees:', err)
         monthlyLessons.value = []
@@ -1285,6 +1518,7 @@ export default {
           }
         })
         billingHistoryAdjustmentsByMonth.value = byMonth
+        await loadStudentPaymentDocsForBilling(student.id)
       } catch (err) {
         console.error('Error loading billing history:', err)
         billingHistoryError.value =
@@ -2192,11 +2426,15 @@ export default {
       firstChargedLessonFeeForSelected,
       formatFreeTrialParens,
       currentMonthLabel,
+      currentMonthKey,
       formatCurrency,
       getStudentFeesThisMonth,
       getStudentFinalFeesThisMonth,
       openFeeBreakdown,
       closeFeeBreakdown,
+      isStudentMonthPaid,
+      isPaymentToggling,
+      toggleStudentMonthPayment,
       feeStatusBadgeClass,
       formatBreakdownDate,
       loadMonthlyFees,
@@ -2535,7 +2773,7 @@ export default {
 }
 
 .students-table :deep(.col-fees) {
-  min-width: 150px;
+  min-width: 190px;
   white-space: nowrap;
 }
 
@@ -2561,6 +2799,61 @@ export default {
 .fee-link:focus-visible {
   outline: 2px solid var(--color-primary, #4f46e5);
   outline-offset: 2px;
+}
+
+.fees-this-month-cell {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.payment-toggle {
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  margin-left: 0;
+  padding: 2px 4px;
+  font-size: 1rem;
+  line-height: 1;
+  border-radius: 6px;
+  transition: background-color 0.15s ease, opacity 0.15s ease;
+}
+
+.payment-toggle:disabled {
+  cursor: wait;
+  opacity: 0.55;
+}
+
+.payment-toggle.paid {
+  color: #059669;
+}
+
+.payment-toggle.unpaid {
+  color: #dc2626;
+}
+
+.payment-toggle:focus-visible {
+  outline: 2px solid var(--color-primary, #4f46e5);
+  outline-offset: 2px;
+}
+
+.month-payment-summary {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.billing-month-final-row {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-top: 4px;
+  width: 100%;
 }
 
 .fee-modal {

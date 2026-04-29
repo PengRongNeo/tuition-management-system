@@ -22,6 +22,7 @@
             <tr>
               <th>Name</th>
               <th>Contact</th>
+              <th>Telegram</th>
               <th>Subjects</th>
               <th>Qualifications</th>
               <th>Join Date</th>
@@ -33,6 +34,15 @@
             <tr v-for="teacher in teachers" :key="teacher.id">
               <td>{{ teacher.name }}</td>
               <td>{{ teacher.contact || '-' }}</td>
+              <td>
+                <div class="telegram-cell">
+                  <span>{{ formatTelegramHandle(teacher) }}</span>
+                  <span
+                    v-if="isTelegramLinked(teacher)"
+                    class="badge badge-success telegram-linked"
+                  >Linked</span>
+                </div>
+              </td>
               <td>
                 <span v-if="teacher.subjects && teacher.subjects.length > 0">
                   {{ teacher.subjects.join(', ') }}
@@ -74,6 +84,26 @@
             <div class="form-group">
               <label>Contact *</label>
               <input v-model="formData.contact" type="tel" required />
+            </div>
+            <div class="form-group">
+              <label>Telegram handle</label>
+              <input
+                v-model="formData.telegramHandle"
+                type="text"
+                placeholder="@username — must match Telegram Settings"
+                autocomplete="off"
+              />
+              <p class="field-hint">
+                Teacher opens your Telegram bot and sends <code>/start</code> so we can store their chat ID.
+                The handle here must match their Telegram username (with or without @).
+              </p>
+            </div>
+            <div v-if="showEditModal && isTelegramLinked(formData)" class="form-group">
+              <label>Telegram linked</label>
+              <p class="telegram-linked-readonly">
+                Chat ID saved — reminders go to this Telegram account.
+                Clear the handle and save only if you need to re-link.
+              </p>
             </div>
             <div class="form-group">
               <label>Bank Account</label>
@@ -156,6 +186,15 @@
             <h3>Teacher Information</h3>
             <p><strong>Name:</strong> {{ selectedTeacher.name }}</p>
             <p><strong>Contact:</strong> {{ selectedTeacher.contact || '-' }}</p>
+            <p>
+              <strong>Telegram:</strong>
+              {{ formatTelegramHandle(selectedTeacher) }}
+              <span
+                v-if="isTelegramLinked(selectedTeacher)"
+                class="badge badge-success"
+                style="margin-left: 8px;"
+              >Linked for reminders</span>
+            </p>
             <p><strong>Bank Account:</strong> {{ selectedTeacher.bank_acct || '-' }}</p>
             <p><strong>Qualifications:</strong> {{ selectedTeacher.qualifications_desc || '-' }}</p>
             <p><strong>Join Date:</strong> {{ formatDate(selectedTeacher.join_date) }}</p>
@@ -221,6 +260,8 @@ export default {
     const formData = ref({
       name: '',
       contact: '',
+      telegramHandle: '',
+      telegramChatId: '',
       bank_acct: '',
       qualifications_desc: '',
       subjects: [],
@@ -268,11 +309,25 @@ export default {
       return isNaN(d.getTime()) ? new Date().toISOString().split('T')[0] : d.toISOString().split('T')[0]
     }
 
+    const formatTelegramHandle = (teacher) => {
+      const h = teacher?.telegramHandle ?? teacher?.telegram_handle
+      if (!h || !String(h).trim()) return '—'
+      const t = String(h).trim()
+      return t.startsWith('@') ? t : `@${t}`
+    }
+
+    const isTelegramLinked = (row) => {
+      const id = row?.telegramChatId ?? row?.telegram_chat_id
+      return Boolean(id && String(id).trim())
+    }
+
     const editTeacher = (teacher) => {
       editingId.value = teacher.id
       formData.value = {
         name: teacher.name || '',
         contact: teacher.contact || '',
+        telegramHandle: teacher.telegramHandle ?? teacher.telegram_handle ?? '',
+        telegramChatId: teacher.telegramChatId ?? teacher.telegram_chat_id ?? '',
         bank_acct: teacher.bank_acct || '',
         qualifications_desc: teacher.qualifications_desc ?? teacher.qualifications ?? '',
         subjects: Array.isArray(teacher.subjects) ? [...teacher.subjects] : [],
@@ -306,6 +361,8 @@ export default {
         const teacherData = {
           name: formData.value.name,
           contact: formData.value.contact,
+          telegramHandle: formData.value.telegramHandle || '',
+          telegramChatId: formData.value.telegramChatId || '',
           bank_acct: formData.value.bank_acct || '',
           qualifications_desc: formData.value.qualifications_desc || '',
           subjects: formData.value.subjects,
@@ -333,6 +390,8 @@ export default {
       formData.value = {
         name: '',
         contact: '',
+        telegramHandle: '',
+        telegramChatId: '',
         bank_acct: '',
         qualifications_desc: '',
         subjects: [],
@@ -364,7 +423,9 @@ export default {
       viewTeacher,
       deleteTeacher,
       saveTeacher,
-      closeModal
+      closeModal,
+      formatTelegramHandle,
+      isTelegramLinked
     }
   }
 }
@@ -402,5 +463,32 @@ export default {
   margin-top: 20px;
   margin-bottom: 10px;
   font-size: 16px;
+}
+
+.telegram-cell {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.telegram-linked {
+  font-size: 0.7rem;
+}
+
+.field-hint {
+  margin: 6px 0 0;
+  font-size: 12px;
+  color: #64748b;
+  line-height: 1.4;
+}
+
+.telegram-linked-readonly {
+  margin: 0;
+  font-size: 0.875rem;
+  color: #065f46;
+  background: #ecfdf5;
+  padding: 10px 12px;
+  border-radius: 8px;
 }
 </style>

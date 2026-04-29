@@ -156,7 +156,16 @@
                   — {{ formatCurrency(row.revenue) }}
                 </span>
               </div>
-              <div class="dt-today-actions" @click.stop>
+              <div
+                v-if="row.hasLessonRecord"
+                class="dt-today-logged-hint"
+                @click.stop
+              >Lesson already logged</div>
+              <div
+                v-else
+                class="dt-today-actions"
+                @click.stop
+              >
                 <router-link
                   :to="{
                     name: 'LessonSubmission',
@@ -1770,9 +1779,25 @@ export default {
 
     const todayTimetableClasses = computed(() => {
       const tkey = dateKey(new Date())
+      const lessons = dashboardLessons.value
+      const hasRecordFor = (classId, sessionDate) => {
+        if (!classId || !sessionDate) return false
+        const want = dateKey(sessionDate)
+        for (const l of lessons) {
+          const cid = l.class_id || l.classId
+          if (cid !== classId) continue
+          const ld = parseLessonDate(l.lesson_date || l.lessonDate || l.date)
+          if (ld && dateKey(ld) === want) return true
+        }
+        return false
+      }
       return weekTimetableSessions.value
         .filter((s) => dateKey(s.sessionDate) === tkey)
         .sort((a, b) => a.startMin - b.startMin)
+        .map((s) => ({
+          ...s,
+          hasLessonRecord: hasRecordFor(s.classId, s.sessionDate)
+        }))
     })
 
     const weekTimetableRevenueTotal = computed(() =>
@@ -2635,9 +2660,11 @@ export default {
             cls.main_teacher_id || cls.mainTeacherId || getClassTeacherId(cls) || '',
           remark: t
         })
+        // Close immediately (closeMissedModal refuses while missedSaving is true)
+        missedSaving.value = false
+        closeMissedModal()
         await Promise.all([refreshLessons(), refreshAttendance()])
         await loadDashboardExtras()
-        closeMissedModal()
       } catch (e) {
         missedError.value = e.message || 'Failed to save missed lesson.'
       } finally {
@@ -3415,6 +3442,12 @@ export default {
   gap: 6px;
 }
 .dt-today-rev { font-weight: 600; color: #0f172a; }
+.dt-today-logged-hint {
+  margin-top: 10px;
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: #16a34a;
+}
 .dt-today-actions {
   display: flex;
   flex-wrap: wrap;

@@ -5,6 +5,10 @@ import path from 'path'
 import { readdirSync, readFileSync, existsSync } from 'fs'
 import { fileURLToPath } from 'url'
 import admin from 'firebase-admin'
+import {
+  runTelegramLessonReminders,
+  processTelegramWebhook
+} from './telegramLessonReminders.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
@@ -111,7 +115,7 @@ app.get('/api/health', (_req, res) =>
     ok: true,
     // Bump when adding public / admin routes; helps verify a stale Vercel deploy
     // (e.g. 404 "Cannot POST /api/public/lesson-missed" means old build).
-    build: { publicLessonMissed: true }
+    build: { publicLessonMissed: true, telegramLessonReminders: true }
   })
 )
 
@@ -710,7 +714,19 @@ app.get('/api/teachers', requireAuth, async (req, res) => {
 
 app.post('/api/teachers', requireAuth, async (req, res) => {
   try {
-    const { name, contact, bank_acct, qualifications_desc, subjects, join_date, active } = req.body || {}
+    const {
+      name,
+      contact,
+      bank_acct,
+      qualifications_desc,
+      subjects,
+      join_date,
+      active,
+      telegramHandle,
+      telegramChatId
+    } = req.body || {}
+    const th = (telegramHandle ?? '').toString().trim()
+    const tc = (telegramChatId ?? '').toString().trim()
     const ref = await db.collection('teachers').add({
       name: name || '',
       contact: contact || '',
@@ -718,7 +734,11 @@ app.post('/api/teachers', requireAuth, async (req, res) => {
       qualifications_desc: qualifications_desc || '',
       subjects: Array.isArray(subjects) ? subjects : [],
       join_date: join_date ? admin.firestore.Timestamp.fromDate(new Date(join_date)) : admin.firestore.FieldValue.serverTimestamp(),
-      active: active !== false
+      active: active !== false,
+      telegramHandle: th,
+      telegramChatId: tc,
+      telegram_handle: th,
+      telegram_chat_id: tc
     })
     res.json({ id: ref.id })
   } catch (e) {
@@ -735,7 +755,17 @@ app.put('/api/teachers/:id', requireAuth, async (req, res) => {
       return res.status(404).json({ error: 'Teacher not found' })
     }
     const body = req.body || {}
-    const { name, contact, bank_acct, qualifications_desc, subjects, join_date, active } = body
+    const {
+      name,
+      contact,
+      bank_acct,
+      qualifications_desc,
+      subjects,
+      join_date,
+      active,
+      telegramHandle,
+      telegramChatId
+    } = body
     const update = {}
     if (name !== undefined) update.name = name
     if (contact !== undefined) update.contact = contact
@@ -747,6 +777,16 @@ app.put('/api/teachers/:id', requireAuth, async (req, res) => {
       if (!isNaN(d.getTime())) update.join_date = admin.firestore.Timestamp.fromDate(d)
     }
     if (active !== undefined) update.active = active
+    if (telegramHandle !== undefined) {
+      const th = (telegramHandle || '').toString().trim()
+      update.telegramHandle = th
+      update.telegram_handle = th
+    }
+    if (telegramChatId !== undefined) {
+      const tc = (telegramChatId || '').toString().trim()
+      update.telegramChatId = tc
+      update.telegram_chat_id = tc
+    }
     if (Object.keys(update).length === 0) {
       return res.status(400).json({ error: 'No fields to update' })
     }
@@ -1544,6 +1584,62 @@ app.get('/api/dashboard', requireAuth, async (req, res) => {
     res.status(500).json({ error: e.message })
   }
 })
+
+// --- Telegram: Bot webhook (captures chat_id on /start; TELEGRAM_BOT_TOKEN server-only) ---
+app.post('/api/public/telegram/webhook', async (req, res) => {
+  const secret = process.env.TELEGRAM_WEBHOOK_SECRET
+  if (secret) {
+    const hdr = req.headers['x-telegram-bot-api-secret-token']
+    if (hdr !== secret) {
+      return res.status(401).json({ error: 'Unauthorized' })
+    }
+  }
+  const token = process.env.TELEGRAM_BOT_TOKEN
+  if (!token) {
+    return res.status(503).json({ error: 'Telegram bot not configured' })
+  }
+  try {
+    await processTelegramWebhook(req.body, { db, admin, token })
+    res.json({ ok: true })
+  } catch (e) {
+    console.error('[telegram webhook]', e)
+    res.status(500).json({ error: e.message })
+  }
+})
+
+// --- Cron: lesson submission reminders (call every 5 min from Vercel Cron or another scheduler) ---
+app.get('/api/cron/telegram-lesson-reminders', async (req, res) => {
+  const secret = process.env.CRON_SECRET
+  if (secret) {
+    const hdr =
+      req.headers['x-cron-secret'] ||
+      (req.headers.authorization || '').replace(/^Bearer\s+/i, '')
+    if (hdr !== secret) return res.status(401).json({ error: 'Unauthorized' })
+  }
+  try {
+    const result = await runTelegramLessonReminders({ db, admin, log: console.log })
+    res.json({ ok: true, ...result })
+  } catch (e) {
+    console.error('[cron telegram-lesson-reminders]', e)
+    res.status(500).json({ error: e.message })
+  }
+})
+
+// Telegram lesson reminders: long-running Node server polls every 5 minutes.
+// On Vercel, disable polling and schedule GET /api/cron/telegram-lesson-reminders instead.
+const TELEGRAM_POLL_MS = 5 * 60 * 1000
+if (process.env.TELEGRAM_BOT_TOKEN && process.env.APP_BASE_URL && !process.env.VERCEL) {
+  setTimeout(() => {
+    runTelegramLessonReminders({ db, admin, log: console.log }).catch((e) =>
+      console.error('[telegram reminders]', e)
+    )
+  }, 20_000)
+  setInterval(() => {
+    runTelegramLessonReminders({ db, admin, log: console.log }).catch((e) =>
+      console.error('[telegram reminders]', e)
+    )
+  }, TELEGRAM_POLL_MS)
+}
 
 // Return JSON (not HTML) for unknown paths so the SPA client can show a useful error
 // and parse `error` (avoids a useless "Request failed" when the response body is HTML).

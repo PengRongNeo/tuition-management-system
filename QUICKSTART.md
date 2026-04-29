@@ -37,6 +37,11 @@ In Firebase Console → Firestore Database → Rules, use:
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
+    // Allow authenticated admins to read/write monthly payment tracking (bookkeeping only)
+    match /studentPayments/{paymentId} {
+      allow read, write: if request.auth != null;
+    }
+
     // Allow authenticated admins to read/write all data
     match /{document=**} {
       allow read, write: if request.auth != null;

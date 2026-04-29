@@ -20,73 +20,12 @@
               <input
                 type="date"
                 v-model="formData.lessonDate"
-                :min="lessonDateUnlocked ? '' : scheduleDateMin"
-                :max="lessonDateUnlocked ? '' : scheduleDateMax"
-                :disabled="!lessonDateUnlocked"
-                :class="{ 'input-locked': !lessonDateUnlocked }"
                 required
               />
-              <button
-                v-if="!lessonDateUnlocked"
-                type="button"
-                class="btn btn-secondary btn-sm"
-                @click="openLessonDatePasswordModal"
-              >
-                Change lesson date
-              </button>
-              <button
-                v-else
-                type="button"
-                class="btn btn-secondary btn-sm"
-                @click="relockLessonDate"
-              >
-                Lock lesson date
-              </button>
             </div>
-            <p v-if="!lessonDateUnlocked" class="lesson-date-hint">
-              Lesson date is locked. Enter password to change.
+            <p v-if="classData.day_of_week" class="lesson-date-hint">
+              Regular class day: {{ classData.day_of_week }} (you may pick any date for catch-up, holiday week, etc.)
             </p>
-            <p v-else class="lesson-date-hint lesson-date-hint-unlocked">
-              Lesson date can now be changed.
-            </p>
-            <p v-if="classData.day_of_week && !lessonDateUnlocked" style="font-size: 12px; color: #666; margin-top: 4px;">
-              Must be a {{ classData.day_of_week }} (same day as class schedule).
-            </p>
-            <p v-if="lessonDateDayError && !lessonDateUnlocked" class="error" style="font-size: 12px; margin-top: 4px;">{{ lessonDateDayError }}</p>
-          </div>
-
-          <div
-            v-if="showLessonDatePasswordModal"
-            class="lesson-date-modal-overlay"
-            @click.self="closeLessonDatePasswordModal"
-          >
-            <div class="lesson-date-modal" role="dialog" aria-modal="true">
-              <h3>Enter password to change lesson date</h3>
-              <p class="lesson-date-modal-hint">
-                Editing the lesson date requires a password.
-              </p>
-              <form @submit.prevent="submitLessonDatePassword">
-                <input
-                  ref="lessonDatePasswordInput"
-                  v-model="lessonDatePassword"
-                  type="password"
-                  placeholder="Password"
-                  autocomplete="off"
-                  autofocus
-                />
-                <p v-if="lessonDatePasswordError" class="error" style="font-size: 12px; margin-top: 6px;">
-                  {{ lessonDatePasswordError }}
-                </p>
-                <div class="lesson-date-modal-actions">
-                  <button type="button" class="btn btn-secondary" @click="closeLessonDatePasswordModal">
-                    Cancel
-                  </button>
-                  <button type="submit" class="btn btn-primary">
-                    Unlock
-                  </button>
-                </div>
-              </form>
-            </div>
           </div>
 
           <div class="form-group">
@@ -321,7 +260,7 @@
 </template>
 
 <script>
-import { ref, onMounted, computed, nextTick } from 'vue'
+import { ref, onMounted, computed } from 'vue'
 import { api } from '../api'
 import { useRoute } from 'vue-router'
 import {
@@ -339,8 +278,6 @@ import {
   getStudentStatusLabel,
   getStudentStatusClass
 } from '../constants/studentStatus'
-
-const LESSON_DATE_UNLOCK_PASSWORD = '123'
 
 export default {
   name: 'LessonSubmissionView',
@@ -373,10 +310,6 @@ export default {
         error.value = 'Please select a teacher'
         return
       }
-      if (lessonDateDayError.value) {
-        error.value = lessonDateDayError.value
-        return
-      }
       error.value = ''
       missedModalRemark.value = ''
       missedModalError.value = ''
@@ -388,45 +321,6 @@ export default {
       showMissedReasonModal.value = false
       missedModalRemark.value = ''
       missedModalError.value = ''
-    }
-
-    const lessonDateUnlocked = ref(false)
-    const showLessonDatePasswordModal = ref(false)
-    const lessonDatePassword = ref('')
-    const lessonDatePasswordError = ref('')
-    const lessonDatePasswordInput = ref(null)
-
-    const openLessonDatePasswordModal = async () => {
-      lessonDatePassword.value = ''
-      lessonDatePasswordError.value = ''
-      showLessonDatePasswordModal.value = true
-      await nextTick()
-      lessonDatePasswordInput.value?.focus?.()
-    }
-
-    const closeLessonDatePasswordModal = () => {
-      showLessonDatePasswordModal.value = false
-      lessonDatePassword.value = ''
-      lessonDatePasswordError.value = ''
-    }
-
-    const submitLessonDatePassword = () => {
-      if (lessonDatePassword.value === LESSON_DATE_UNLOCK_PASSWORD) {
-        lessonDateUnlocked.value = true
-        showLessonDatePasswordModal.value = false
-        lessonDatePassword.value = ''
-        lessonDatePasswordError.value = ''
-      } else {
-        lessonDatePasswordError.value = 'Incorrect password. Lesson date remains locked.'
-      }
-    }
-
-    const relockLessonDate = () => {
-      lessonDateUnlocked.value = false
-      lessonDatePassword.value = ''
-      lessonDatePasswordError.value = ''
-      const scheduleDate = classData.value && getScheduleDayDate(classData.value.day_of_week)
-      if (scheduleDate) formData.value.lessonDate = scheduleDate
     }
 
     const DAY_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday']
@@ -455,27 +349,6 @@ export default {
       }
       return null
     }
-
-    const scheduleDateMin = computed(() => {
-      const date = classData.value && getScheduleDayDate(classData.value.day_of_week)
-      return date || ''
-    })
-
-    const scheduleDateMax = computed(() => {
-      return scheduleDateMin.value
-    })
-
-    const lessonDateDayError = computed(() => {
-      // When unlocked via password, allow any date (admin override).
-      if (lessonDateUnlocked.value) return ''
-      if (!classData.value?.day_of_week || !formData.value.lessonDate) return ''
-      const selected = new Date(formData.value.lessonDate)
-      const dayName = DAY_NAMES[selected.getDay()]
-      if (dayName !== classData.value.day_of_week) {
-        return `Lesson date must be a ${classData.value.day_of_week}.`
-      }
-      return ''
-    })
 
     // Makeup students added to this lesson only (not persisted as enrolment).
     const makeupStudents = ref([]) // array of { id, name, school, level, parent_contact }
@@ -644,10 +517,6 @@ export default {
         missedModalError.value = 'Please select a teacher on the form first.'
         return
       }
-      if (lessonDateDayError.value) {
-        missedModalError.value = lessonDateDayError.value
-        return
-      }
       if (!classData.value) return
       missedModalError.value = ''
       error.value = ''
@@ -664,10 +533,13 @@ export default {
           endTime: classData.value.end_time || classData.value.endTime || '',
           remark: t
         })
-        success.value = true
-        successIsMissed.value = true
+        // Allow close/re-open; hide modal immediately after success
+        savingAsMissed.value = false
         showMissedReasonModal.value = false
         missedModalRemark.value = ''
+        missedModalError.value = ''
+        success.value = true
+        successIsMissed.value = true
         setTimeout(() => { success.value = false }, 5000)
       } catch (err) {
         console.error('Error saving missed lesson:', err)
@@ -685,10 +557,6 @@ export default {
       }
       if (!formData.value.teacherId) {
         error.value = 'Please select a teacher'
-        return
-      }
-      if (lessonDateDayError.value) {
-        error.value = lessonDateDayError.value
         return
       }
       error.value = ''
@@ -740,10 +608,6 @@ export default {
             isMakeup: false
           }
         })
-        lessonDateUnlocked.value = false
-        lessonDatePassword.value = ''
-        lessonDatePasswordError.value = ''
-        showLessonDatePasswordModal.value = false
         setTimeout(() => { success.value = false }, 5000)
       } catch (err) {
         console.error('Error submitting lesson:', err)
@@ -767,9 +631,6 @@ export default {
       error,
       success,
       formatSchedule,
-      scheduleDateMin,
-      scheduleDateMax,
-      lessonDateDayError,
       isAttendanceValid,
       submitLesson,
       showMissedReasonModal,
@@ -793,15 +654,6 @@ export default {
       addMakeupStudent,
       removeMakeupStudent,
       isStudentAlreadyAdded,
-      lessonDateUnlocked,
-      showLessonDatePasswordModal,
-      lessonDatePassword,
-      lessonDatePasswordError,
-      lessonDatePasswordInput,
-      openLessonDatePasswordModal,
-      closeLessonDatePasswordModal,
-      submitLessonDatePassword,
-      relockLessonDate,
       isStudentActive,
       getStudentStatusLabel,
       getStudentStatusClass
@@ -827,21 +679,10 @@ h1 {
   min-width: 0;
 }
 
-.input-locked {
-  background: #f1f5f9;
-  color: #475569;
-  cursor: not-allowed;
-}
-
 .lesson-date-hint {
   margin-top: 6px;
   font-size: 12px;
   color: #64748b;
-}
-
-.lesson-date-hint-unlocked {
-  color: #15803d;
-  font-weight: 500;
 }
 
 .btn-sm {
@@ -924,14 +765,6 @@ h1 {
   margin: 0 0 14px;
   font-size: 0.875rem;
   color: #64748b;
-}
-
-.lesson-date-modal input[type="password"] {
-  width: 100%;
-  padding: 10px 12px;
-  border: 1px solid #cbd5e1;
-  border-radius: 8px;
-  font-size: 0.9375rem;
 }
 
 .lesson-date-modal-actions {
