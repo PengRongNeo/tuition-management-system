@@ -173,16 +173,23 @@ app
     res.json({ ok: true, route: 'telegram webhook alive' })
   })
   .post(async (req, res) => {
+    console.log('Telegram webhook received')
     const secret = process.env.TELEGRAM_WEBHOOK_SECRET
     if (secret) {
       const hdr = req.headers['x-telegram-bot-api-secret-token']
       if (hdr !== secret) {
+        console.warn('[telegram webhook] rejected: invalid or missing webhook secret header')
         return res.status(401).json({ error: 'Unauthorized' })
       }
     }
     const token = process.env.TELEGRAM_BOT_TOKEN
     if (!token) {
       return res.status(503).json({ error: 'Telegram bot not configured' })
+    }
+    try {
+      console.log('[telegram webhook] update body:', JSON.stringify(req.body))
+    } catch (e) {
+      console.log('[telegram webhook] update body: (could not stringify)', e?.message)
     }
     try {
       await processTelegramWebhook(req.body, { db, admin, token })

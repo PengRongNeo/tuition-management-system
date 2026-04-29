@@ -125,6 +125,12 @@ export async function processTelegramWebhook (body, { db, admin, token }) {
 
   const chatId = msg.chat?.id
   const usernameRaw = msg.from?.username
+  console.log('[telegram webhook] /start', {
+    chat_id: chatId,
+    username: usernameRaw ?? null,
+    normalizedUsername: usernameRaw ? normalizeTelegramHandle(usernameRaw) : null
+  })
+
   if (chatId == null) return { ok: true }
 
   if (!usernameRaw) {
@@ -141,33 +147,58 @@ export async function processTelegramWebhook (body, { db, admin, token }) {
   let matchedId = null
   let matchedName = ''
   let matchedHandle = ''
+
   for (const d of teachersSnap.docs) {
     const data = d.data()
-    const handle = normalizeTelegramHandle(data.telegramHandle || data.telegram_handle || '')
-    if (handle && handle === normalized) {
+    const rawHandle = data.telegramHandle
+    const rawHandleSnake = data.telegram_handle
+    const nFromCamel = normalizeTelegramHandle(rawHandle || '')
+    const nFromSnake = normalizeTelegramHandle(rawHandleSnake || '')
+    console.log('[telegram webhook] teacher compare', {
+      teacherId: d.id,
+      teacherName: data.name || '',
+      telegramHandle: rawHandle ?? '',
+      telegram_handle: rawHandleSnake ?? '',
+      normalizedTelegramHandle: nFromCamel || '(empty)',
+      normalized_telegram_handle: nFromSnake || '(empty)'
+    })
+
+    const matchCamel = Boolean(nFromCamel && nFromCamel === normalized)
+    const matchSnake = Boolean(nFromSnake && nFromSnake === normalized)
+    if (matchCamel || matchSnake) {
       matchedId = d.id
       matchedName = data.name || ''
-      matchedHandle = data.telegramHandle || data.telegram_handle || `@${usernameRaw}`
+      matchedHandle = rawHandle || rawHandleSnake || `@${usernameRaw}`
+      console.log('[telegram webhook] match', { teacherId: matchedId, viaCamel: matchCamel, viaSnake: matchSnake })
       break
     }
   }
 
   if (!matchedId) {
+    console.log('[telegram webhook] no teacher match for normalized username:', normalized)
     await telegramSendMessage(
       token,
       chatId,
-      `No teacher profile matches @${usernameRaw}. Ask an admin to set your Telegram handle in the Teachers page to @${usernameRaw}, then send /start again.`
+      'No matching teacher found. Please check your Telegram handle in the teacher profile.'
     )
     return { ok: true }
   }
 
-  await db.collection('teachers').doc(matchedId).update({
-    telegramChatId: String(chatId),
-    telegram_chat_id: String(chatId),
-    telegram_link_username: usernameRaw,
-    updated_at: admin.firestore.FieldValue.serverTimestamp(),
-    updatedAt: admin.firestore.FieldValue.serverTimestamp()
-  })
+  try {
+    await db.collection('teachers').doc(matchedId).update({
+      telegramChatId: String(chatId),
+      telegram_chat_id: String(chatId),
+      telegram_link_username: usernameRaw,
+      telegramLinkedAt: admin.firestore.FieldValue.serverTimestamp(),
+      telegram_linked_at: admin.firestore.FieldValue.serverTimestamp(),
+      updated_at: admin.firestore.FieldValue.serverTimestamp(),
+      updatedAt: admin.firestore.FieldValue.serverTimestamp()
+    })
+    console.log('[telegram webhook] teacher updated', { teacherId: matchedId, chatId: String(chatId) })
+  } catch (err) {
+    console.error('[telegram webhook] Firestore update failed:', err)
+    throw err
+  }
 
   await telegramSendMessage(
     token,
