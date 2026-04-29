@@ -64,6 +64,47 @@ const auth = admin.auth()
 const app = express()
 const PORT = process.env.PORT || 4000
 
+/**
+ * Vercel rewrites all routes to `api/index.js`, but the Node `req.url` can be
+ * `/api` or `/` instead of `/api/public/...`, so Express would miss routes and
+ * return 404. Restore the client path from Vercel / proxy headers when needed.
+ */
+function restoreVercelRequestPath (req) {
+  if (!process.env.VERCEL) return
+  const pathOnly = (req.url || '/').split('?')[0]
+  if (pathOnly.startsWith('/api/') && pathOnly.length > '/api/'.length) return
+
+  const candidates = [
+    req.headers['x-vercel-original-path'],
+    req.headers['x-vercel-http-queue-path'],
+    req.headers['x-invoke-path'],
+    req.headers['x-matched-path'],
+    req.headers['x-forwarded-uri'],
+    req.headers['x-original-url']
+  ]
+  for (let c of candidates) {
+    if (Array.isArray(c)) c = c[0]
+    if (typeof c !== 'string') continue
+    if (/^https?:\/\//i.test(c)) {
+      try {
+        const u = new URL(c)
+        c = u.pathname + u.search
+      } catch {
+        continue
+      }
+    }
+    if (!c.startsWith('/api')) continue
+    const q = (req.url || '').includes('?') ? '?' + req.url.split('?').slice(1).join('?') : ''
+    req.url = c.split('?')[0] + q
+    if (req.originalUrl !== undefined) req.originalUrl = req.url
+    return
+  }
+}
+app.use((req, res, next) => {
+  restoreVercelRequestPath(req)
+  next()
+})
+
 // FRONTEND_ORIGIN accepts a comma-separated list of allowed origins so the
 // same backend can serve local dev + a Vercel preview + production from one
 // deployment. Use "*" to allow any origin (not recommended in prod).
@@ -98,7 +139,13 @@ const corsOptions = {
   },
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'X-Form-Secret']
+  allowedHeaders: [
+    'Content-Type',
+    'Authorization',
+    'X-Form-Secret',
+    'X-Telegram-Bot-Api-Secret-Token',
+    'X-Cron-Secret'
+  ]
 }
 
 app.use(cors(corsOptions))
@@ -118,6 +165,33 @@ app.get('/api/health', (_req, res) =>
     build: { publicLessonMissed: true, telegramLessonReminders: true }
   })
 )
+
+// Telegram webhook (GET = health for browser; POST = Bot API updates)
+app
+  .route('/api/public/telegram/webhook')
+  .get((_req, res) => {
+    res.json({ ok: true, route: 'telegram webhook alive' })
+  })
+  .post(async (req, res) => {
+    const secret = process.env.TELEGRAM_WEBHOOK_SECRET
+    if (secret) {
+      const hdr = req.headers['x-telegram-bot-api-secret-token']
+      if (hdr !== secret) {
+        return res.status(401).json({ error: 'Unauthorized' })
+      }
+    }
+    const token = process.env.TELEGRAM_BOT_TOKEN
+    if (!token) {
+      return res.status(503).json({ error: 'Telegram bot not configured' })
+    }
+    try {
+      await processTelegramWebhook(req.body, { db, admin, token })
+      res.json({ ok: true })
+    } catch (e) {
+      console.error('[telegram webhook]', e)
+      res.status(500).json({ error: e.message })
+    }
+  })
 
 // Auth middleware: verify Firebase ID token
 async function requireAuth(req, res, next) {
@@ -1581,28 +1655,6 @@ app.get('/api/dashboard', requireAuth, async (req, res) => {
       recentLessons
     })
   } catch (e) {
-    res.status(500).json({ error: e.message })
-  }
-})
-
-// --- Telegram: Bot webhook (captures chat_id on /start; TELEGRAM_BOT_TOKEN server-only) ---
-app.post('/api/public/telegram/webhook', async (req, res) => {
-  const secret = process.env.TELEGRAM_WEBHOOK_SECRET
-  if (secret) {
-    const hdr = req.headers['x-telegram-bot-api-secret-token']
-    if (hdr !== secret) {
-      return res.status(401).json({ error: 'Unauthorized' })
-    }
-  }
-  const token = process.env.TELEGRAM_BOT_TOKEN
-  if (!token) {
-    return res.status(503).json({ error: 'Telegram bot not configured' })
-  }
-  try {
-    await processTelegramWebhook(req.body, { db, admin, token })
-    res.json({ ok: true })
-  } catch (e) {
-    console.error('[telegram webhook]', e)
     res.status(500).json({ error: e.message })
   }
 })

@@ -110,6 +110,17 @@ one for the frontend and one for the backend.
    the backend's `FRONTEND_ORIGIN` env var so CORS lets it through, then
    redeploy the backend.
 
+### Telegram bot webhook URL
+
+- **Preferred:** `https://<backend-project>.vercel.app/api/public/telegram/webhook`  
+  (the **backend** deployment — Root Directory `backend/` — not the Vue app).
+- If you use the **frontend** URL for webhooks, set `VITE_API_BASE_URL` or
+  `BACKEND_API_URL` on the **frontend** Vercel project to the backend origin so
+  `frontend/api/[...path].js` can proxy `/api/*` to Express. Otherwise `/api/...`
+  on the frontend hostname returns **404**.
+- Quick checks: `GET .../api/public/telegram/webhook` should return
+  `{ "ok": true, "route": "telegram webhook alive" }`.
+
 ### Notes
 
 - If a public form shows **"Cannot POST /api/public/…"**: the request reached Express but that route is not in the **deployed** server bundle. **Redeploy the backend** project (root `backend/`) with the current code, then confirm `GET /api/health` includes `publicLessonMissed: true` on the URL you set in the frontend’s `VITE_API_BASE_URL`.
