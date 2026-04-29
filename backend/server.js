@@ -30,8 +30,17 @@ function getServiceAccountPath() {
   return null
 }
 
-// Initialize Firebase Admin
-if (admin.apps.length === 0) {
+/** Lazily initialize Firebase so importing this module never calls process.exit (Vercel cold start). */
+let db = null
+let auth = null
+
+function initializeFirebaseAdmin () {
+  if (db && auth) return
+  if (admin.apps.length > 0) {
+    db = admin.firestore()
+    auth = admin.auth()
+    return
+  }
   let initialized = false
   const credPath = getServiceAccountPath()
   if (credPath && existsSync(credPath)) {
@@ -54,15 +63,37 @@ if (admin.apps.length === 0) {
     initialized = true
   }
   if (!initialized) {
-    console.error('Missing Firebase Admin config. Set GOOGLE_APPLICATION_CREDENTIALS (with file present), or set FIREBASE_PROJECT_ID, FIREBASE_CLIENT_EMAIL, FIREBASE_PRIVATE_KEY')
-    process.exit(1)
+    throw new Error(
+      'Missing Firebase Admin config. Set GOOGLE_APPLICATION_CREDENTIALS (with file present), or set FIREBASE_PROJECT_ID, FIREBASE_CLIENT_EMAIL, FIREBASE_PRIVATE_KEY'
+    )
   }
+  db = admin.firestore()
+  auth = admin.auth()
 }
 
-const db = admin.firestore()
-const auth = admin.auth()
+function shouldSkipFirebaseMiddleware (req) {
+  const raw = req.originalUrl || req.url || req.path || ''
+  const p = String(raw).split('?')[0] || ''
+  if (p === '/' || p === '/api/health') return true
+  if (req.method === 'GET' && (p === '/api/public/telegram/webhook' || p === '/api/public/telegram/webhook/')) {
+    return true
+  }
+  return false
+}
+
 const app = express()
 const PORT = process.env.PORT || 4000
+
+/** Env presence only (no values). */
+function logTelegramWebhookEnvPresence () {
+  console.log('[telegram webhook] env presence:', {
+    TELEGRAM_BOT_TOKEN: Boolean(process.env.TELEGRAM_BOT_TOKEN),
+    TELEGRAM_WEBHOOK_SECRET: Boolean(process.env.TELEGRAM_WEBHOOK_SECRET),
+    FIREBASE_PROJECT_ID: Boolean(process.env.FIREBASE_PROJECT_ID),
+    FIREBASE_CLIENT_EMAIL: Boolean(process.env.FIREBASE_CLIENT_EMAIL),
+    FIREBASE_PRIVATE_KEY: Boolean(process.env.FIREBASE_PRIVATE_KEY)
+  })
+}
 
 /**
  * Vercel rewrites all routes to `api/index.js`, but the Node `req.url` can be
@@ -155,6 +186,21 @@ app.options('*', cors(corsOptions))
 
 app.use(express.json())
 
+// Lazily initialize Firebase before any route that needs Firestore/Auth (not /, /api/health, or GET telegram probe).
+app.use((req, res, next) => {
+  if (shouldSkipFirebaseMiddleware(req)) return next()
+  try {
+    initializeFirebaseAdmin()
+    next()
+  } catch (e) {
+    console.error('[firebase] initializeFirebaseAdmin failed:', e?.stack || e)
+    return res.status(503).json({
+      ok: false,
+      error: e?.message || String(e)
+    })
+  }
+})
+
 // Simple health endpoint handy for Vercel / uptime checks.
 app.get('/', (_req, res) => res.json({ ok: true, service: 'tuition-management-backend' }))
 app.get('/api/health', (_req, res) =>
@@ -173,30 +219,57 @@ app
     res.json({ ok: true, route: 'telegram webhook alive' })
   })
   .post(async (req, res) => {
-    console.log('Telegram webhook received')
-    const secret = process.env.TELEGRAM_WEBHOOK_SECRET
-    if (secret) {
-      const hdr = req.headers['x-telegram-bot-api-secret-token']
-      if (hdr !== secret) {
-        console.warn('[telegram webhook] rejected: invalid or missing webhook secret header')
-        return res.status(401).json({ error: 'Unauthorized' })
+    try {
+      console.log('[telegram webhook] hit')
+      logTelegramWebhookEnvPresence()
+
+      const secret = process.env.TELEGRAM_WEBHOOK_SECRET
+      if (secret) {
+        const hdr = req.headers['x-telegram-bot-api-secret-token']
+        const headerPresent = Boolean(hdr)
+        const match = hdr === secret
+        console.log('[telegram webhook] secret check:', {
+          TELEGRAM_WEBHOOK_SECRET_configured: true,
+          X_Telegram_Bot_Api_Secret_Token_header_present: headerPresent,
+          secret_matches_header: match
+        })
+        if (!match) {
+          return res.status(200).json({
+            ok: false,
+            error:
+              'Webhook secret mismatch. Set TELEGRAM_WEBHOOK_SECRET to the same value as Telegram setWebhook secret_token, and ensure the header X-Telegram-Bot-Api-Secret-Token is sent.'
+          })
+        }
+      } else {
+        console.log('[telegram webhook] secret check: skipped (TELEGRAM_WEBHOOK_SECRET not set in env)')
       }
-    }
-    const token = process.env.TELEGRAM_BOT_TOKEN
-    if (!token) {
-      return res.status(503).json({ error: 'Telegram bot not configured' })
-    }
-    try {
-      console.log('[telegram webhook] update body:', JSON.stringify(req.body))
-    } catch (e) {
-      console.log('[telegram webhook] update body: (could not stringify)', e?.message)
-    }
-    try {
+
+      const token = process.env.TELEGRAM_BOT_TOKEN
+      if (!token) {
+        console.warn('[telegram webhook] TELEGRAM_BOT_TOKEN missing in env')
+        return res.status(200).json({
+          ok: false,
+          error: 'TELEGRAM_BOT_TOKEN not configured on server'
+        })
+      }
+
+      try {
+        console.log('[telegram webhook] update body (after auth):', JSON.stringify(req.body))
+      } catch (stringifyErr) {
+        console.log('[telegram webhook] update body: could not stringify:', stringifyErr?.message)
+      }
+
+      console.log('[telegram webhook] processTelegramWebhook start')
       await processTelegramWebhook(req.body, { db, admin, token })
-      res.json({ ok: true })
-    } catch (e) {
-      console.error('[telegram webhook]', e)
-      res.status(500).json({ error: e.message })
+      console.log('[telegram webhook] processTelegramWebhook end')
+
+      return res.json({ ok: true })
+    } catch (err) {
+      console.error('[telegram webhook] error stack:', err?.stack || err)
+      return res.status(500).json({
+        ok: false,
+        error: err?.message || String(err)
+      })
     }
   })
 

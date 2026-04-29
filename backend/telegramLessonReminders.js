@@ -144,6 +144,7 @@ export async function processTelegramWebhook (body, { db, admin, token }) {
 
   const normalized = normalizeTelegramHandle(usernameRaw)
   const teachersSnap = await db.collection('teachers').get()
+  console.log('[telegram webhook] Firestore teachers query count:', teachersSnap.size)
   let matchedId = null
   let matchedName = ''
   let matchedHandle = ''
