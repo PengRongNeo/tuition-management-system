@@ -878,7 +878,10 @@ import {
   getAttendanceDuration,
   formatDurationLabel
 } from '../constants/billing'
-import { isMissedLesson } from '../constants/lessons'
+import {
+  isMissedLesson,
+  resolveLessonTimeRangeLabel
+} from '../constants/lessons'
 import {
   STUDENT_STATUS_OPTIONS,
   STUDENT_STATUS_LEGACY_INACTIVE,
@@ -1272,14 +1275,7 @@ export default {
         const day = lessonDate
           ? lessonDate.toLocaleDateString('en-SG', { weekday: 'long' })
           : (cls?.day_of_week || '—')
-        const startL = lesson.start_time || lesson.startTime
-        const endL = lesson.end_time || lesson.endTime
-        const startT = cls?.start_time || ''
-        const endT = cls?.end_time || ''
-        const time =
-          startL && endL
-            ? `${startL} - ${endL}`
-            : (startT && endT ? `${startT} - ${endT}` : (startT || '—'))
+        const time = resolveLessonTimeRangeLabel(lesson, cls)
         const entry = {
           attendanceId: att.id || null,
           lessonId: lesson.id,
@@ -1591,11 +1587,7 @@ export default {
           extractSubjectFromClassName(className) ||
           ''
 
-        const startT =
-          lesson.start_time || lesson.startTime || classObj?.start_time || ''
-        const endT =
-          lesson.end_time || lesson.endTime || classObj?.end_time || ''
-        const time = startT && endT ? `${startT} - ${endT}` : startT || '—'
+        const time = resolveLessonTimeRangeLabel(lesson, classObj)
 
         const y = lessonDate.getFullYear()
         const m = lessonDate.getMonth() + 1

@@ -4,7 +4,17 @@
       <h1>Submit Lesson</h1>
       
       <div v-if="loading" class="loading">Loading class information...</div>
-      <div v-else-if="!classData" class="error">Class not found</div>
+      <div v-else-if="!classData" class="error">
+        <p style="margin: 0 0 6px; font-weight: 600;">{{ loadErrorTitle }}</p>
+        <p v-if="loadErrorDetail" style="margin: 0 0 6px;">{{ loadErrorDetail }}</p>
+        <p v-if="classIdFromRoute" style="margin: 0; font-size: 0.8125rem; opacity: 0.85;">
+          Class ID from link: <code>{{ classIdFromRoute }}</code>
+        </p>
+        <p v-else style="margin: 0; font-size: 0.8125rem; opacity: 0.85;">
+          No class ID was found in the URL. Make sure the link looks like
+          <code>/lesson/&lt;classId&gt;</code>.
+        </p>
+      </div>
       <div v-else>
         <div class="card" style="margin-bottom: 20px;">
           <h2>{{ classData.name }}</h2>
@@ -14,18 +24,34 @@
         </div>
 
         <form @submit.prevent="submitLesson" class="card">
-          <div class="form-group">
-            <label>Lesson Date *</label>
-            <div class="lesson-date-row">
+          <div class="lesson-date-timing-row">
+            <div class="form-group lesson-date-field">
+              <label for="lesson-date-input">Lesson Date *</label>
               <input
+                id="lesson-date-input"
                 type="date"
                 v-model="formData.lessonDate"
                 required
               />
+              <p v-if="classData.day_of_week" class="lesson-date-hint">
+                Regular class day: {{ classData.day_of_week }} (you may pick any date for catch-up, holiday week, etc.)
+              </p>
             </div>
-            <p v-if="classData.day_of_week" class="lesson-date-hint">
-              Regular class day: {{ classData.day_of_week }} (you may pick any date for catch-up, holiday week, etc.)
-            </p>
+            <div class="form-group lesson-timing-field">
+              <label for="lesson-timing-input">Lesson Timing *</label>
+              <input
+                id="lesson-timing-input"
+                type="text"
+                v-model="formData.lessonTiming"
+                required
+                maxlength="120"
+                placeholder="e.g. 17:30-19:30"
+                autocomplete="off"
+              />
+              <p class="lesson-date-hint">
+                Defaults to this class’s schedule; change only if this session ran at different times (does not update the class timetable).
+              </p>
+            </div>
           </div>
 
           <div class="form-group">
@@ -278,6 +304,7 @@ import {
   getStudentStatusLabel,
   getStudentStatusClass
 } from '../constants/studentStatus'
+import { getDefaultLessonTimingFromClass } from '../constants/lessons'
 
 export default {
   name: 'LessonSubmissionView',
@@ -290,10 +317,18 @@ export default {
     const students = ref([])
     const error = ref('')
     const success = ref(false)
+    // Differentiated load error so we don't show a generic "Class not found"
+    // for missing-id / 404 / auth / network failures (especially for the
+    // Telegram in-app browser on mobile, which often hits a different failure
+    // mode than desktop).
+    const loadErrorTitle = ref('Class not found')
+    const loadErrorDetail = ref('')
+    const classIdFromRoute = ref('')
     const successIsMissed = ref(false)
     const savingAsMissed = ref(false)
     const formData = ref({
       lessonDate: new Date().toISOString().split('T')[0],
+      lessonTiming: '',
       teacherId: '',
       description: '',
       homework: '',
@@ -471,8 +506,45 @@ export default {
     }
 
     const loadClassData = async () => {
+      const rawClassId = route.params.classId
+      const classId = typeof rawClassId === 'string'
+        ? rawClassId.trim()
+        : Array.isArray(rawClassId) ? String(rawClassId[0] || '').trim() : ''
+      classIdFromRoute.value = classId
+
+      // Diagnostic logs — visible in the Telegram in-app browser console too
+      // (on iOS, Web Inspector via Safari; on Android, chrome://inspect).
+      // Critical for figuring out why the page works on desktop but not on
+      // mobile.
       try {
-        const data = await api.getPublic(`/api/public/class/${route.params.classId}`)
+        const apiUrl = `/api/public/class/${encodeURIComponent(classId)}`
+        // eslint-disable-next-line no-console
+        console.info('[LessonSubmissionView] loadClassData', {
+          href: typeof window !== 'undefined' ? window.location.href : '',
+          pathname: typeof window !== 'undefined' ? window.location.pathname : '',
+          search: typeof window !== 'undefined' ? window.location.search : '',
+          hash: typeof window !== 'undefined' ? window.location.hash : '',
+          routeName: route.name,
+          routeParams: { ...route.params },
+          routeQuery: { ...route.query },
+          resolvedClassId: classId,
+          firestoreApiPath: apiUrl
+        })
+      } catch (_) {
+        // ignore console issues in restricted in-app browsers
+      }
+
+      if (!classId) {
+        loadErrorTitle.value = 'Missing class ID in link'
+        loadErrorDetail.value =
+          'This page needs a class ID in the URL (e.g. /lesson/abc123). ' +
+          'Re-open the link from your latest Telegram reminder.'
+        loading.value = false
+        return
+      }
+
+      try {
+        const data = await api.getPublic(`/api/public/class/${encodeURIComponent(classId)}`)
         if (data) {
           classData.value = data
           formData.value.teacherId = data.main_teacher_id || ''
@@ -483,6 +555,7 @@ export default {
             const scheduleDate = getScheduleDayDate(data.day_of_week)
             if (scheduleDate) formData.value.lessonDate = scheduleDate
           }
+          formData.value.lessonTiming = getDefaultLessonTimingFromClass(data)
           const teacherList = await api.getPublic('/api/public/teachers')
           teachers.value = teacherList || []
           const stu = data.students || []
@@ -498,10 +571,49 @@ export default {
               isMakeup: false
             }
           })
+        } else {
+          // Defensive: API returned 200 but no body (shouldn't normally happen).
+          loadErrorTitle.value = 'Class data unavailable'
+          loadErrorDetail.value =
+            'The server returned an empty response for this class. Please refresh and try again.'
         }
       } catch (err) {
-        console.error('Error loading class data:', err)
-        error.value = 'Error loading class information'
+        console.error('[LessonSubmissionView] loadClassData failed', {
+          classId,
+          status: err?.status,
+          message: err?.message,
+          url: err?.url
+        })
+        const status = err?.status
+        if (status === 404) {
+          loadErrorTitle.value = 'Class not found'
+          loadErrorDetail.value =
+            'This class no longer exists in the database, or the link is from a different environment. ' +
+            'Ask your admin to re-send the latest Telegram reminder.'
+        } else if (status === 401 || status === 403) {
+          loadErrorTitle.value = 'Permission denied'
+          loadErrorDetail.value =
+            'The server rejected this request. This page should not need a login — ' +
+            'try opening the link in your normal browser (Safari/Chrome) instead of the Telegram in-app browser.'
+        } else if (status >= 500) {
+          loadErrorTitle.value = 'Server error'
+          loadErrorDetail.value =
+            (err?.message || 'The server returned an error.') +
+            ' Please try again in a moment.'
+        } else if (!status) {
+          // No status === fetch threw before getting a response (offline,
+          // CORS, DNS, mixed-content). The Telegram in-app browser is the
+          // usual culprit on mobile.
+          loadErrorTitle.value = 'Could not reach the server'
+          loadErrorDetail.value =
+            (err?.message || 'Network request failed.') +
+            ' If you opened this from Telegram, tap the menu (⋮ / share) and choose ' +
+            '"Open in Browser" (Safari / Chrome) and try again.'
+        } else {
+          loadErrorTitle.value = 'Could not load class'
+          loadErrorDetail.value = err?.message || 'Unknown error.'
+        }
+        error.value = loadErrorDetail.value
       } finally {
         loading.value = false
       }
@@ -559,6 +671,11 @@ export default {
         error.value = 'Please select a teacher'
         return
       }
+      const timingTrimmed = (formData.value.lessonTiming || '').trim()
+      if (!timingTrimmed) {
+        error.value = 'Lesson timing is required'
+        return
+      }
       error.value = ''
       success.value = false
       successIsMissed.value = false
@@ -582,6 +699,7 @@ export default {
         await api.postPublic('/api/public/lesson-submit', {
           classId: route.params.classId,
           lessonDate: formData.value.lessonDate,
+          lessonTiming: timingTrimmed,
           teacherId: formData.value.teacherId,
           description: formData.value.description,
           homework: formData.value.homework || '',
@@ -593,6 +711,9 @@ export default {
         const defaultDuration = classDefaultDuration.value
         formData.value = {
           lessonDate: scheduleDate || new Date().toISOString().split('T')[0],
+          lessonTiming:
+            getDefaultLessonTimingFromClass(classData.value) ||
+            timingTrimmed,
           teacherId: classData.value?.main_teacher_id || '',
           description: '',
           homework: '',
@@ -630,6 +751,9 @@ export default {
       formData,
       error,
       success,
+      loadErrorTitle,
+      loadErrorDetail,
+      classIdFromRoute,
       formatSchedule,
       isAttendanceValid,
       submitLesson,
@@ -667,16 +791,23 @@ h1 {
   margin-bottom: 20px;
 }
 
-.lesson-date-row {
-  display: flex;
-  gap: 8px;
-  align-items: center;
-  flex-wrap: wrap;
+.lesson-date-timing-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px 20px;
+  align-items: start;
 }
 
-.lesson-date-row input[type="date"] {
-  flex: 1 1 220px;
-  min-width: 0;
+@media (max-width: 560px) {
+  .lesson-date-timing-row {
+    grid-template-columns: 1fr;
+  }
+}
+
+.lesson-date-field input[type="date"],
+.lesson-timing-field input[type="text"] {
+  width: 100%;
+  box-sizing: border-box;
 }
 
 .lesson-date-hint {

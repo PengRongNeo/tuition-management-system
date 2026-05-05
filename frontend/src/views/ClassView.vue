@@ -168,6 +168,10 @@
           <div style="margin-bottom: 15px;">
             <strong>Teacher:</strong> {{ selectedLesson.teacherName }}
           </div>
+          <div style="margin-bottom: 15px;">
+            <strong>Lesson timing:</strong>
+            {{ formatLessonRecordTiming(selectedLesson) }}
+          </div>
           <div v-if="isMissedLesson(selectedLesson)" style="margin-bottom: 15px;">
             <strong>Remark:</strong>
             <p>{{ selectedLesson.remark || selectedLesson.remarks || '—' }}</p>
@@ -552,7 +556,11 @@ import {
   getStudentStatusLabel,
   getStudentStatusClass
 } from '../constants/studentStatus'
-import { isMissedLesson } from '../constants/lessons'
+import {
+  isMissedLesson,
+  resolveLessonTimeRangeLabel,
+  resolveLessonClockTimes
+} from '../constants/lessons'
 
 export default {
   name: 'ClassView',
@@ -638,6 +646,9 @@ export default {
     }
 
     const normalizeStatus = (status) => normalizeAttendanceStatus(status)
+
+    const formatLessonRecordTiming = (lesson) =>
+      resolveLessonTimeRangeLabel(lesson, classData.value)
 
     const copyLink = () => {
       navigator.clipboard.writeText(lessonSubmissionUrl.value)
@@ -827,10 +838,17 @@ export default {
       editLessonSuccess.value = false
       editingLessonId.value = lesson.id
       editLessonForm.lessonDate = lesson.lesson_date || lesson.lessonDate || ''
+      const resolvedClock = resolveLessonClockTimes(lesson, classData.value)
       editLessonForm.startTime =
-        lesson.start_time || lesson.startTime || classData.value?.start_time || ''
+        lesson.start_time ||
+        lesson.startTime ||
+        resolvedClock.startTime ||
+        ''
       editLessonForm.endTime =
-        lesson.end_time || lesson.endTime || classData.value?.end_time || ''
+        lesson.end_time ||
+        lesson.endTime ||
+        resolvedClock.endTime ||
+        ''
       editLessonForm.description = lesson.description || ''
       editLessonForm.homework = lesson.homework || ''
       editLessonForm.materialsLink =
@@ -965,6 +983,10 @@ export default {
         return
       }
 
+      const editedLessonTiming = `${String(editLessonForm.startTime).trim()}-${String(
+        editLessonForm.endTime
+      ).trim()}`
+
       if (editingIsMissed.value) {
         const r = (editLessonForm.remark || '').trim()
         if (!r) {
@@ -973,6 +995,7 @@ export default {
         }
         const payload = {
           lesson_date: editLessonForm.lessonDate,
+          lesson_timing: editedLessonTiming,
           start_time: editLessonForm.startTime,
           end_time: editLessonForm.endTime,
           remark: r,
@@ -1017,6 +1040,7 @@ export default {
 
       const payload = {
         lesson_date: editLessonForm.lessonDate,
+        lesson_timing: editedLessonTiming,
         start_time: editLessonForm.startTime,
         end_time: editLessonForm.endTime,
         description: editLessonForm.description || '',
@@ -1118,6 +1142,7 @@ export default {
       getStudentName,
       getStatusBadgeClass,
       normalizeStatus,
+      formatLessonRecordTiming,
       copyLink,
       viewLesson,
       deleteLessonRecord,

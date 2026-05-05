@@ -1103,7 +1103,7 @@ import {
 } from '../constants/billing'
 import { isStudentActive } from '../constants/studentStatus'
 import { formatSignedCurrency } from '../constants/billAdjustments'
-import { isMissedLesson } from '../constants/lessons'
+import { isMissedLesson, resolveLessonClockTimes } from '../constants/lessons'
 import { useAdminData } from '../composables/useAdminData'
 
 Chart.register(...registerables)
@@ -2102,18 +2102,10 @@ export default {
         const classId = lesson.class_id || lesson.classId
         const cls = classId ? classById.value.get(classId) : null
         const key = `${classId}|${dateKey(lessonDate)}`
-        const st =
-          lesson.start_time ||
-          lesson.startTime ||
-          cls?.start_time ||
-          cls?.startTime ||
-          ''
-        const en =
-          lesson.end_time ||
-          lesson.endTime ||
-          cls?.end_time ||
-          cls?.endTime ||
-          ''
+        const { startTime: st, endTime: en } = resolveLessonClockTimes(
+          lesson,
+          cls
+        )
         const row = {
           lesson,
           date: lessonDate,
@@ -2206,6 +2198,8 @@ export default {
         const duration = getAttendanceDuration(att, lesson, cls)
         const rate = cls ? getClassRatePerHour(cls) : 0
         const fee = isChargeableAttendance(status) ? rate * duration : 0
+        const { startTime: lessonStart, endTime: lessonEnd } =
+          resolveLessonClockTimes(lesson, cls)
 
         const entry = {
           att,
@@ -2218,8 +2212,8 @@ export default {
           status,
           duration,
           fee,
-          startTime: cls?.start_time || cls?.startTime || '',
-          endTime: cls?.end_time || cls?.endTime || ''
+          startTime: lessonStart,
+          endTime: lessonEnd
         }
         records.push(entry)
 
@@ -2297,14 +2291,18 @@ export default {
           })
         }
 
+        const { startTime: revStart, endTime: revEnd } = resolveLessonClockTimes(
+          lesson,
+          cls
+        )
         rows.push({
           lesson,
           lessonDate,
           classId,
           className: cls?.name || lesson.className || '—',
           teacherName: cls?.teacherName || lesson.teacherName || '—',
-          startTime: cls?.start_time || cls?.startTime || '',
-          endTime: cls?.end_time || cls?.endTime || '',
+          startTime: revStart,
+          endTime: revEnd,
           studentsCharged,
           revenue,
           chargedDetails

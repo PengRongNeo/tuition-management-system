@@ -211,8 +211,25 @@ export async function processTelegramWebhook (body, { db, admin, token }) {
 
 export async function runTelegramLessonReminders ({ db, admin, log = () => {} }) {
   const token = process.env.TELEGRAM_BOT_TOKEN
-  const baseUrl = (process.env.APP_BASE_URL || '').replace(/\/$/, '')
+  const rawBaseUrl = process.env.APP_BASE_URL || ''
+  const baseUrl = rawBaseUrl.replace(/\/$/, '')
   const tz = process.env.APP_TIMEZONE || 'Asia/Singapore'
+
+  // Defensive logging: surface APP_BASE_URL so it's obvious from server logs
+  // when the reminder is using localhost / a stale preview / an empty value.
+  // We log baseUrl and the *presence* of the token only — never the token.
+  log('[telegram reminders] env:', {
+    APP_BASE_URL: baseUrl || '(empty)',
+    APP_BASE_URL_raw: rawBaseUrl || '(empty)',
+    TELEGRAM_BOT_TOKEN_present: Boolean(token),
+    APP_TIMEZONE: tz
+  })
+  if (baseUrl && /^http:\/\/(localhost|127\.0\.0\.1)/i.test(baseUrl)) {
+    log('[telegram reminders] WARNING: APP_BASE_URL points to localhost — links will NOT work outside this machine (Telegram on phones will fail to load).')
+  }
+  if (baseUrl && !/^https?:\/\//i.test(baseUrl)) {
+    log('[telegram reminders] WARNING: APP_BASE_URL is missing http(s):// scheme — Telegram clients may fail to open the link.')
+  }
 
   if (!token || !baseUrl) {
     log('[telegram reminders] skip: TELEGRAM_BOT_TOKEN or APP_BASE_URL missing')
@@ -277,6 +294,13 @@ export async function runTelegramLessonReminders ({ db, admin, log = () => {} })
     const startStr = (c.start_time || c.startTime || '').toString().trim()
     const endStr = (c.end_time || c.endTime || '').toString().trim()
     const link = `${baseUrl}/lesson/${encodeURIComponent(classId)}?date=${encodeURIComponent(lessonDate)}`
+    log('[telegram reminders] link generated:', {
+      classId,
+      lessonDate,
+      teacherId,
+      chatId: String(chatId),
+      link
+    })
 
     const message =
       `Hi Teacher ${teacherName}, please submit the lesson record for ${className}.\n\n` +

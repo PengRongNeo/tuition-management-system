@@ -529,9 +529,26 @@ app.get('/api/public/class/:id', async (req, res) => {
 // --- Public: lesson submission (no auth) ---
 app.post('/api/public/lesson-submit', async (req, res) => {
   try {
-    const { classId, lessonDate, teacherId, description, homework, materialsLink, attendance } = req.body || {}
+    const {
+      classId,
+      lessonDate,
+      teacherId,
+      lessonTiming,
+      lesson_timing,
+      description,
+      homework,
+      materialsLink,
+      attendance
+    } = req.body || {}
+    const timingTrimmed = (lessonTiming ?? lesson_timing ?? '').toString().trim()
     if (!classId || !lessonDate || !teacherId || !attendance || typeof attendance !== 'object') {
       return res.status(400).json({ error: 'classId, lessonDate, teacherId, and attendance required' })
+    }
+    if (!timingTrimmed) {
+      return res.status(400).json({ error: 'lessonTiming is required' })
+    }
+    if (timingTrimmed.length > 120) {
+      return res.status(400).json({ error: 'lessonTiming is too long' })
     }
     // Look up class so we can snapshot name + default duration on the lesson
     // and use its default duration as a fallback when a student row doesn't
@@ -559,6 +576,8 @@ app.post('/api/public/lesson-submit', async (req, res) => {
       teacherId,
       lesson_date: lessonDate,
       lessonDate,
+      lesson_timing: timingTrimmed,
+      lessonTiming: timingTrimmed,
       description: description || '',
       homework: homework || '',
       materials_link: materialsLink || '',
@@ -635,6 +654,9 @@ async function buildMissedLessonAndAttendance (body) {
     .map((d) => d.data().student_id)
     .filter(Boolean)
 
+  const timingMissed =
+    st && en ? `${String(st).trim()}-${String(en).trim()}` : ''
+
   const lessonRef = await db.collection('lessons').add({
     class_id: classId,
     classId,
@@ -644,6 +666,9 @@ async function buildMissedLessonAndAttendance (body) {
     teacherId,
     lesson_date: lessonDate,
     lessonDate,
+    ...(timingMissed
+      ? { lesson_timing: timingMissed, lessonTiming: timingMissed }
+      : {}),
     start_time: st,
     startTime: st,
     end_time: en,
@@ -1342,6 +1367,10 @@ app.put('/api/lessons/:id', requireAuth, async (req, res) => {
     if (body.lesson_date !== undefined || body.lessonDate !== undefined) {
       assignBoth('lesson_date', 'lessonDate', body.lesson_date ?? body.lessonDate ?? '')
     }
+    if (body.lesson_timing !== undefined || body.lessonTiming !== undefined) {
+      const t = (body.lesson_timing ?? body.lessonTiming ?? '').toString().trim()
+      assignBoth('lesson_timing', 'lessonTiming', t)
+    }
     if (body.start_time !== undefined || body.startTime !== undefined) {
       assignBoth('start_time', 'startTime', body.start_time ?? body.startTime ?? '')
     }
@@ -1501,6 +1530,8 @@ app.get('/api/classes/:id/lessons', requireAuth, async (req, res) => {
         // Normalize both naming conventions so the client can rely on snake_case.
         class_id: data.class_id || data.classId || classId,
         lesson_date: data.lesson_date || data.lessonDate || '',
+        lesson_timing: data.lesson_timing ?? data.lessonTiming ?? '',
+        lessonTiming: data.lesson_timing ?? data.lessonTiming ?? '',
         start_time: data.start_time ?? data.startTime ?? '',
         end_time: data.end_time ?? data.endTime ?? '',
         teacher_id: data.teacher_id || data.teacherId || '',
@@ -1780,16 +1811,22 @@ app.get('/api/dashboard', requireAuth, async (req, res) => {
 // On Vercel, disable polling; use cron-job.org (or similar) to GET /api/cron/telegram-lesson-reminders.
 const TELEGRAM_POLL_MS = 5 * 60 * 1000
 if (process.env.TELEGRAM_BOT_TOKEN && process.env.APP_BASE_URL && !process.env.VERCEL) {
-  setTimeout(() => {
+  // The HTTP middleware lazily initializes Firebase, but this background timer
+  // can fire before any request arrives, so `db` would still be null. Make
+  // sure Firebase is ready before each run.
+  const runRemindersTick = () => {
+    try {
+      initializeFirebaseAdmin()
+    } catch (e) {
+      console.error('[telegram reminders] firebase init failed:', e?.message || e)
+      return
+    }
     runTelegramLessonReminders({ db, admin, log: console.log }).catch((e) =>
       console.error('[telegram reminders]', e)
     )
-  }, 20_000)
-  setInterval(() => {
-    runTelegramLessonReminders({ db, admin, log: console.log }).catch((e) =>
-      console.error('[telegram reminders]', e)
-    )
-  }, TELEGRAM_POLL_MS)
+  }
+  setTimeout(runRemindersTick, 20_000)
+  setInterval(runRemindersTick, TELEGRAM_POLL_MS)
 }
 
 // Return JSON (not HTML) for unknown paths so the SPA client can show a useful error
