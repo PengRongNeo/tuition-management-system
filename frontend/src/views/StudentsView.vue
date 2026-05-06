@@ -3287,4 +3287,48 @@ export default {
   gap: 6px;
   flex-wrap: wrap;
 }
+
+/* -- Mobile (<= 768px) ----------------------------------------------------
+   Make the section toolbars and modal headers usable on phones. */
+@media (max-width: 768px) {
+  .student-section-card {
+    padding: 16px;
+    border-radius: 12px;
+  }
+  .student-section-header {
+    align-items: flex-start;
+    gap: 8px;
+  }
+  .student-section-title { font-size: 1.0625rem; }
+  .student-count-badge { font-size: 0.75rem; padding: 4px 10px; }
+
+  /* Sticky first/last columns on phones: keep them sticky but allow the
+     middle to scroll horizontally inside .students-table-scroll. */
+  .students-table { font-size: 0.8125rem; }
+  .students-table :deep(thead th),
+  .students-table :deep(tbody td) { padding: 10px 12px; }
+
+  /* Fee modal & billing history modal: full-bleed on phones. */
+  .fee-modal,
+  .billing-history-modal,
+  .modify-bill-modal {
+    width: 100%;
+    max-width: 100%;
+    padding: 18px;
+  }
+  .billing-history-header { gap: 8px; }
+  .billing-history-header h2 { font-size: 1.0625rem; }
+  .billing-month-card { padding: 14px; border-radius: 12px; }
+  .billing-month-header { gap: 8px; }
+  .billing-month-totals { align-items: flex-start; text-align: left; }
+
+  .fee-modal-actions { justify-content: stretch; }
+  .fee-modal-actions .btn { flex: 1 1 calc(50% - 4px); }
+}
+
+@media (max-width: 480px) {
+  .student-section-card { padding: 14px; }
+  .row-actions .btn { font-size: 0.8125rem; }
+  .fee-modal-actions .btn { flex: 1 1 100%; }
+}
 </style>

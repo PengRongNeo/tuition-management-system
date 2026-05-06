@@ -12,7 +12,7 @@ export const DEFAULT_RATE_BY_LEVEL = {
   'Primary 5': 28,
   'Primary 6': 28,
   'Sec 1': 30,
-  'Sec 2': 30,
+  'Sec 2': 32,
   'Sec 3': 35,
   'Sec 4': 40,
   'Sec 5': 40

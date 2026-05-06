@@ -3669,16 +3669,65 @@ export default {
 .tt-block.calendar-class-card:focus-visible { z-index: 2; }
 .tt-block--merged .tt-block-foot { display: inline; margin-top: 0; }
 
-@media (max-width: 640px) {
+@media (max-width: 768px) {
+  /* Header controls stretch full width and stack so the toggle + teacher
+     filter never overflow the page. */
   .page-header-row { align-items: stretch; }
-  .period-toggle { width: 100%; justify-content: center; }
-  .dashboard-detail-modal { max-height: 94vh; }
+  .dashboard-header-controls {
+    width: 100%;
+    gap: 10px;
+  }
+  .period-toggle {
+    width: 100%;
+    justify-content: center;
+  }
+  .period-toggle-btn { flex: 1 1 0; padding: 8px 12px; }
+  .teacher-filter {
+    width: 100%;
+  }
+  .teacher-filter-select {
+    width: 100%;
+    min-width: 0;
+    max-width: 100%;
+  }
+
+  /* Stat cards: tighten spacing so 4 stacked cards still feel scannable. */
+  .card-stat .stat-number { font-size: 1.45rem; }
+  .card-stat .stat-number--revenue-compare { font-size: 1.05rem; }
+  .card-stat-clickable:hover { transform: none; }
+
+  /* Today's classes list: full-width action buttons, 44px tap targets. */
+  .dt-today-actions { gap: 8px; }
+  .dt-today-actions .btn { flex: 1 1 calc(50% - 4px); min-height: 38px; }
+
+  /* Detail modal: roomy on tablet/phone. */
+  .dashboard-detail-modal {
+    max-height: calc(100dvh - 24px);
+    width: 100%;
+  }
   .dashboard-detail-header h2 { font-size: 1.125rem; }
-  .dashboard-detail-stat { flex: 1 1 calc(50% - 6px); }
+  .dashboard-detail-summary { padding: 10px; gap: 8px; }
+  .dashboard-detail-stat { flex: 1 1 calc(50% - 4px); padding: 8px 10px; }
+  .dashboard-detail-stat-value { font-size: 1.05rem; }
+}
+
+@media (max-width: 640px) {
   .charged-detail-list li {
     grid-template-columns: 1fr;
     gap: 2px;
   }
   .charged-detail-fee { text-align: left; }
+
+  /* Calendar row cells get cramped < 640px; let the calendar scroll
+     horizontally while preserving alignment. */
+  .monthly-cal-row { min-height: 84px; }
+  .monthly-cal-cell { min-width: 56px; }
+  .monthly-pill { font-size: 0.6rem; }
+}
+
+@media (max-width: 480px) {
+  .dashboard-detail-stat { flex: 1 1 100%; }
+  .dt-week-kpis .dt-kpi { flex: 1 1 100%; }
+  .dt-today-card { padding: 10px 12px; }
 }
 </style>

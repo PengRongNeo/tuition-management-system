@@ -17,6 +17,7 @@
         <p>No teachers found. Add your first teacher to get started.</p>
       </div>
       <div v-else class="card">
+        <div class="table-wrapper">
         <table class="table">
           <thead>
             <tr>
@@ -70,6 +71,7 @@
             </tr>
           </tbody>
         </table>
+        </div>
       </div>
 
       <!-- Create/Edit Modal -->
@@ -490,5 +492,50 @@ export default {
   background: #ecfdf5;
   padding: 10px 12px;
   border-radius: 8px;
+}
+
+/* -- Mobile (<= 768px) ----------------------------------------------------
+   The teacher table has 8 columns and is too wide for phones. The global
+   `.card > .table` rule already turns it into a horizontal-scroll block on
+   small screens; here we just tighten cell sizing and stack inline action
+   groups. */
+@media (max-width: 768px) {
+  .table th,
+  .table td {
+    white-space: nowrap;
+  }
+  .telegram-cell {
+    flex-wrap: nowrap;
+  }
+  /* Add explicit horizontal spacing for the row's three action buttons since
+     they sit inline next to one another in this view. */
+  .table td > .btn + .btn {
+    margin-left: 6px;
+  }
+}
+
+@media (max-width: 480px) {
+  /* On the smallest phones, stack the three action buttons in a column so
+     each is full-width and easy to tap. */
+  .table td > .btn {
+    display: block;
+    width: 100%;
+    margin: 4px 0 0;
+  }
+  .table td > .btn:first-child {
+    margin-top: 0;
+  }
+  .table td > .btn + .btn {
+    margin-left: 0;
+  }
+}
+
+@media (max-width: 480px) {
+  .modal-content {
+    padding: 18px;
+  }
+  .field-hint {
+    font-size: 11px;
+  }
 }
 </style>

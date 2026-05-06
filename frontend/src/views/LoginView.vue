@@ -109,6 +109,7 @@ export default {
   align-items: center;
   min-height: 100vh;
   background: linear-gradient(135deg, #4f46e5 0%, #7c3aed 100%);
+  padding: 16px;
 }
 
 .login-card {
@@ -119,6 +120,20 @@ export default {
   width: 100%;
   max-width: 400px;
   border: 1px solid var(--color-border);
+}
+
+@media (max-width: 480px) {
+  .login-container {
+    padding: 12px;
+  }
+  .login-card {
+    padding: 24px 20px;
+    border-radius: 14px;
+  }
+  .login-card h1 {
+    margin-bottom: 20px;
+    font-size: 1.25rem;
+  }
 }
 
 .login-card h1 {

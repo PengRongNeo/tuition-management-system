@@ -9,6 +9,7 @@
         <router-link to="/classes">Classes</router-link>
         <router-link to="/teachers">Teachers</router-link>
         <router-link to="/students">Students & Fees</router-link>
+        <router-link to="/past-data">View Past Data</router-link>
         <button @click="logout" class="btn btn-secondary btn-nav-logout">Logout</button>
       </div>
     </div>
@@ -64,5 +65,50 @@ export default {
 
 .btn-nav-logout {
   font-size: 0.875rem;
+}
+
+/* -- Mobile (<= 768px) ----------------------------------------------------
+   The navbar already wraps via the global .navbar-content rule. On phones
+   the four nav links + logout don't fit on a single row, so we turn the
+   links row into a horizontally-scrollable strip that keeps every link
+   reachable without a hamburger menu (which would change behavior). */
+@media (max-width: 768px) {
+  :deep(.navbar-content) {
+    flex-wrap: wrap;
+    gap: 6px;
+    padding: 8px 0;
+  }
+  :deep(.navbar-links) {
+    width: 100%;
+    justify-content: flex-start;
+    gap: 4px;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+    padding-bottom: 4px;
+  }
+  :deep(.navbar-links::-webkit-scrollbar) {
+    display: none;
+  }
+  :deep(.navbar-links a) {
+    flex: 0 0 auto;
+    padding: 8px 12px;
+    font-size: 0.875rem;
+    white-space: nowrap;
+  }
+  :deep(.navbar-links .btn) {
+    margin-left: auto;
+    flex: 0 0 auto;
+    white-space: nowrap;
+  }
+  .navbar-brand-text {
+    font-size: 1rem;
+  }
+}
+
+@media (max-width: 480px) {
+  :deep(.navbar-links a) {
+    padding: 8px 10px;
+  }
 }
 </style>

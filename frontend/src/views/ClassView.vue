@@ -103,7 +103,7 @@
           <div v-else-if="lessons.length === 0" class="loading">
             No lessons recorded yet.
           </div>
-          <div v-else>
+          <div v-else class="table-wrapper">
             <table class="table">
               <thead>
                 <tr>
@@ -193,26 +193,31 @@
           </div>
           <div v-if="!isMissedLesson(selectedLesson)" style="margin-bottom: 15px;">
             <strong>Attendance:</strong>
-            <table class="table" style="margin-top: 10px;">
-              <thead>
-                <tr>
-                  <th>Student</th>
-                  <th>Status</th>
-                  <th>Remark</th>
-                </tr>
-              </thead>
-              <tbody>
-                <tr v-for="att in selectedLesson.attendance" :key="att.student_id">
-                  <td>{{ getStudentName(att.student_id) }}</td>
-                  <td>
-                    <span :class="getStatusBadgeClass(att.status)">
-                      {{ normalizeStatus(att.status) }}
-                    </span>
-                  </td>
-                  <td>{{ att.remark || '-' }}</td>
-                </tr>
-              </tbody>
-            </table>
+            <div class="table-wrapper" style="margin-top: 10px;">
+              <table class="table">
+                <thead>
+                  <tr>
+                    <th>Student</th>
+                    <th>Status</th>
+                    <th>Remark</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr
+                    v-for="att in selectedLesson.attendance"
+                    :key="att.id || att.student_id || att.studentId"
+                  >
+                    <td>{{ attendanceRowDisplayName(att) }}</td>
+                    <td>
+                      <span :class="getStatusBadgeClass(att.status)">
+                        {{ normalizeStatus(att.status) }}
+                      </span>
+                    </td>
+                    <td>{{ att.remark || '-' }}</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
           </div>
           <p v-else class="class-lesson-missed-hint" style="margin-bottom: 15px;">
             Students are marked <strong>Missed</strong> with no charge for this session.
@@ -561,6 +566,7 @@ import {
   resolveLessonTimeRangeLabel,
   resolveLessonClockTimes
 } from '../constants/lessons'
+import { resolveAttendanceStudentName } from '../utils/attendanceDisplay'
 
 export default {
   name: 'ClassView',
@@ -621,10 +627,6 @@ export default {
     const getTotalCount = (attendance) => {
       if (!attendance || !Array.isArray(attendance)) return 0
       return attendance.length
-    }
-
-    const getStudentName = (studentId) => {
-      return allStudents.value[studentId]?.name || 'Unknown'
     }
 
     const getStatusBadgeClass = (status) => {
@@ -780,6 +782,17 @@ export default {
       )
     )
 
+    const directoryStudentById = computed(() =>
+      Object.fromEntries(
+        (fullStudentDirectory.value || []).map((s) => [s.id, s])
+      )
+    )
+
+    const attendanceRowDisplayName = (att) =>
+      resolveAttendanceStudentName(att, {
+        studentById: directoryStudentById.value
+      })
+
     const studentsAvailableForEnrolmentPicker = computed(() => {
       const block = new Set([
         ...enrolledStudentIdSet.value,
@@ -806,6 +819,7 @@ export default {
       const rows = Array.isArray(lessonRecord?.attendance)
         ? lessonRecord.attendance
         : []
+      const studentById = directoryStudentById.value
       return rows.map((att) => {
         const studentId = att.student_id ?? att.studentId
         const isMakeupFlag = Boolean(att.is_makeup ?? att.isMakeup)
@@ -817,11 +831,7 @@ export default {
           key: `existing-${att.id || studentId || ++editRowCounter.value}`,
           attendanceId: att.id || null,
           studentId,
-          studentName:
-            att.studentName ||
-            att.student_name ||
-            allStudents.value[studentId]?.name ||
-            'Unknown',
+          studentName: resolveAttendanceStudentName(att, { studentById }),
           status: normalizeAttendanceStatus(att.status) || ATTENDANCE_STATUSES.PRESENT,
           durationHours: resolveRowDuration(att, classDefault),
           isMakeup,
@@ -1049,6 +1059,8 @@ export default {
         attendance: editLessonForm.attendanceRows.map((row) => ({
           id: row.attendanceId || undefined,
           student_id: row.studentId,
+          student_name: row.studentName,
+          studentName: row.studentName,
           status: row.status,
           duration_hours: Number(row.durationHours),
           is_makeup: Boolean(row.isMakeup),
@@ -1139,7 +1151,7 @@ export default {
       formatDate,
       getPresentCount,
       getTotalCount,
-      getStudentName,
+      attendanceRowDisplayName,
       getStatusBadgeClass,
       normalizeStatus,
       formatLessonRecordTiming,
@@ -1546,5 +1558,42 @@ export default {
   color: #475569;
   background: #f1f5f9;
   border-color: #e2e8f0;
+}
+
+/* -- Mobile (<= 768px) ----------------------------------------------------
+   Stack lesson actions vertically, tighten modal padding, ensure bare
+   tables remain readable inside their card. */
+@media (max-width: 768px) {
+  .class-students-header {
+    align-items: flex-start;
+    gap: 8px;
+  }
+  .lesson-row-actions {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .lesson-row-actions .btn {
+    width: 100%;
+  }
+
+  /* Edit Lesson modal: full-bleed on phones (the modal-content base style
+     is overridden globally; this just tunes the inner sections). */
+  .edit-lesson-modal { padding: 18px; }
+  .edit-lesson-header {
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+  .edit-lesson-section {
+    margin-bottom: 16px;
+    padding-bottom: 12px;
+  }
+  .edit-lesson-actions {
+    flex-direction: column-reverse;
+    align-items: stretch;
+    gap: 8px;
+  }
+  .edit-lesson-actions .btn { width: 100%; }
+  .makeup-search-modal { padding: 16px; }
+  .makeup-results { max-height: 50vh; }
 }
 </style>

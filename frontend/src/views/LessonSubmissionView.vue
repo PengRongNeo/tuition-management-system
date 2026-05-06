@@ -1104,4 +1104,36 @@ h1 {
   font-size: 0.75rem;
   color: #64748b;
 }
+
+/* -- Mobile (<= 768px) ----------------------------------------------------
+   Shared layout for the page Telegram lands on. Extra polish so the form,
+   attendance table and modals are comfortable on small phones. */
+@media (max-width: 768px) {
+  h1 { font-size: 1.25rem; margin-bottom: 14px; }
+
+  /* Submit + Save Missed buttons stack and go full-width. */
+  .lesson-form-actions {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .lesson-form-actions .btn { width: 100%; }
+
+  /* Makeup search modal: roomy, scrolls comfortably. */
+  .makeup-modal {
+    max-width: 100%;
+    max-height: calc(100dvh - 24px);
+    padding: 16px;
+  }
+  .makeup-result-item {
+    flex-wrap: wrap;
+    align-items: flex-start;
+  }
+  .makeup-result-item .btn { width: 100%; }
+}
+
+@media (max-width: 480px) {
+  .lesson-date-modal { padding: 18px; }
+  .makeup-modal { border-radius: 12px; }
+  .makeup-search-input { font-size: 16px; } /* prevent iOS zoom */
+}
 </style>

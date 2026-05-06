@@ -47,6 +47,12 @@ const routes = [
     name: 'Teachers',
     component: () => import('../views/TeachersView.vue'),
     meta: { requiresAuth: true }
+  },
+  {
+    path: '/past-data',
+    name: 'PastData',
+    component: () => import('../views/PastDataView.vue'),
+    meta: { requiresAuth: true }
   }
 ]
 

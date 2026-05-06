@@ -1244,12 +1244,37 @@ export default {
   overflow-x: auto;
 }
 
-@media (max-width: 640px) {
+@media (max-width: 768px) {
   .teacher-class-card {
-    padding: 18px;
+    padding: 16px;
   }
   .teacher-class-title {
     font-size: 1rem;
+    flex-wrap: wrap;
+  }
+  /* Time range picker inputs stack on phones so each control gets full width. */
+  .time-range-inputs {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 8px;
+  }
+  .time-range-sep {
+    align-self: center;
+    transform: rotate(90deg);
+    padding: 0;
+  }
+  .time-input-wrap {
+    width: 100%;
+    min-width: 0;
+  }
+}
+
+@media (max-width: 480px) {
+  .teacher-class-card {
+    padding: 14px;
+  }
+  .student-chip {
+    font-size: 0.8rem;
   }
 }
 

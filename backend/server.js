@@ -1426,6 +1426,11 @@ app.put('/api/lessons/:id', requireAuth, async (req, res) => {
       const duration = Number.isFinite(rawDur) && rawDur > 0 ? rawDur : classDefaultDuration
       const isMakeup = Boolean(row.is_makeup ?? row.isMakeup)
       const remark = row.remark ?? ''
+      const nameTrimmed = String(row.student_name ?? row.studentName ?? '').trim()
+      const nameFields =
+        nameTrimmed.length > 0
+          ? { student_name: nameTrimmed, studentName: nameTrimmed }
+          : {}
 
       if (attId) {
         batch.update(db.collection('attendance').doc(attId), {
@@ -1441,6 +1446,7 @@ app.put('/api/lessons/:id', requireAuth, async (req, res) => {
           durationHours: duration,
           is_makeup: isMakeup,
           isMakeup: isMakeup,
+          ...nameFields,
           updated_at: admin.firestore.FieldValue.serverTimestamp(),
           updatedAt: admin.firestore.FieldValue.serverTimestamp()
         })
@@ -1459,6 +1465,7 @@ app.put('/api/lessons/:id', requireAuth, async (req, res) => {
           durationHours: duration,
           is_makeup: isMakeup,
           isMakeup: isMakeup,
+          ...nameFields,
           created_at: admin.firestore.FieldValue.serverTimestamp(),
           createdAt: admin.firestore.FieldValue.serverTimestamp()
         })
